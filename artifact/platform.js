@@ -60,7 +60,7 @@ const PLATFORM = (() => {
           state.exams = new Map(snap.docs.map(d => [d.id, {...d.data(), id: d.id}])); done("exams", snap);
         }, e => { clearTimeout(timer); toast("저장소 오류: " + e.code); });
         db.collection("problems").onSnapshot(snap => {
-          state.problems = new Map(snap.docs.map(d => { const v = {...d.data(), id: d.id}; v.image = "/_blob/" + v.imageId; return [d.id, v]; }));
+          state.problems = new Map(snap.docs.map(d => { const v = upgradeProblem({...d.data(), id: d.id}); v.image = "/_blob/" + v.imageId; return [d.id, v]; }));
           done("problems", snap);
         }, e => { clearTimeout(timer); toast("저장소 오류: " + e.code); });
       },
@@ -99,7 +99,7 @@ const PLATFORM = (() => {
             r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
           });
           for (const e of await req(os("exams", "readonly").getAll())) state.exams.set(e.id, e);
-          for (const p of await req(os("problems", "readonly").getAll())) state.problems.set(p.id, p);
+          for (const p of await req(os("problems", "readonly").getAll())) state.problems.set(p.id, upgradeProblem(p));
         } catch (e) { dbh = null; }
         loaded = true; onChange();
       },

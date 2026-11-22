@@ -134,6 +134,13 @@ aside.tree{background:var(--surface);border:1px solid var(--rule);border-radius:
 .node .n{font-family:var(--font-num);font-size:12px}
 .node.l1{font-weight:600;margin-top:6px} .node.l2{padding-left:16px} .node.l3{padding-left:30px;color:var(--muted)}
 .node.empty{opacity:.45}
+.node .lab{display:flex;align-items:center;gap:4px;min-width:0}
+.node .chev{display:inline-block;width:12px;flex:none;font-size:10px;color:var(--muted);transition:transform .2s ease}
+.node[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.kids{display:grid;grid-template-rows:0fr;transition:grid-template-rows .22s ease}
+.kids.open{grid-template-rows:1fr}
+.kids>div{overflow:hidden;min-height:0}
+.kids:not(.open)>div{visibility:hidden;transition:visibility 0s .22s}
 
 /* ---------- 정답 표시 (OMR) ---------- */
 .omr{display:inline-flex;gap:6px}
@@ -545,7 +552,7 @@ const PLATFORM = (() => {
           r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
         });
         for (const e of await req(os("exams", "readonly").getAll())) state.exams.set(e.id, e);
-        for (const p of await req(os("problems", "readonly").getAll())) state.problems.set(p.id, p);
+        for (const p of await req(os("problems", "readonly").getAll())) state.problems.set(p.id, upgradeProblem(p));
       } catch (e) { dbh = null; toast("브라우저 저장소를 열 수 없어 이번에만 임시로 저장합니다. 시크릿 창이 아닌 일반 창에서 여세요."); }
       loaded = true; onChange();
     },
@@ -666,7 +673,7 @@ const PLATFORM = (() => {
    ===================================================================== */
 
 /* ---------- 2022 개정 교육과정 단원표 ---------- */
-const TREE = [["MS","중학교 수학",[["수와 연산",["소인수분해","정수와 유리수","유리수와 순환소수","제곱근과 실수"]],["변화와 관계",["문자의 사용과 식의 계산","일차방정식","좌표평면과 그래프","연립일차방정식","일차부등식","일차함수와 그래프","다항식의 곱셈과 인수분해","이차방정식","이차함수와 그래프"]],["도형과 측정",["기본 도형과 작도","평면도형과 입체도형","삼각형과 사각형의 성질","도형의 닮음","피타고라스 정리","삼각비","원의 성질"]],["자료와 가능성",["자료의 정리와 해석","경우의 수와 확률","대푯값과 산포도","상관관계"]]]],["CM1","공통수학1",[["다항식",["다항식의 연산","항등식과 나머지정리","인수분해"]],["방정식과 부등식",["복소수와 이차방정식","이차방정식과 이차함수","여러 가지 방정식과 부등식"]],["경우의 수",["합의 법칙과 곱의 법칙","순열과 조합"]],["행렬",["행렬과 그 연산"]]]],["CM2","공통수학2",[["도형의 방정식",["평면좌표","직선의 방정식","원의 방정식","도형의 이동"]],["집합과 명제",["집합","명제"]],["함수와 그래프",["함수","유리함수와 무리함수"]]]],["ALG","대수",[["지수함수와 로그함수",["지수와 로그","지수함수와 로그함수"]],["삼각함수",["삼각함수","사인법칙과 코사인법칙"]],["수열",["등차수열과 등비수열","수열의 합","수학적 귀납법"]]]],["CAL1","미적분I",[["함수의 극한과 연속",["함수의 극한","함수의 연속"]],["미분",["미분계수와 도함수","도함수의 활용"]],["적분",["부정적분과 정적분","정적분의 활용"]]]],["PS","확률과 통계",[["경우의 수",["순열과 조합","이항정리"]],["확률",["확률의 뜻과 활용","조건부확률"]],["통계",["확률분포","통계적 추정"]]]],["CAL2","미적분II",[["수열의 극한",["수열의 극한","급수"]],["미분법",["여러 가지 함수의 미분","여러 가지 미분법","도함수의 활용"]],["적분법",["여러 가지 적분법","정적분의 활용"]]]],["GEO","기하",[["이차곡선",["이차곡선","이차곡선과 직선"]],["공간도형과 공간좌표",["직선과 평면","정사영","공간좌표"]],["벡터",["벡터의 연산","벡터의 성분과 내적"]]]]];
+const TREE = [["MS1","중학교 1학년",[["수와 연산",["소인수분해","정수와 유리수"]],["변화와 관계",["문자의 사용과 식","일차방정식","좌표평면과 그래프"]],["도형과 측정",["기본 도형과 작도","평면도형과 입체도형"]],["자료와 가능성",["자료의 정리와 해석"]]]],["MS2","중학교 2학년",[["수와 연산",["유리수와 순환소수"]],["변화와 관계",["식의 계산","일차부등식","연립일차방정식","일차함수와 그래프"]],["도형과 측정",["삼각형과 사각형의 성질","도형의 닮음","피타고라스 정리"]],["자료와 가능성",["경우의 수와 확률"]]]],["MS3","중학교 3학년",[["수와 연산",["제곱근과 실수"]],["변화와 관계",["다항식의 곱셈과 인수분해","이차방정식","이차함수와 그래프"]],["도형과 측정",["삼각비","원의 성질"]],["자료와 가능성",["산포도","상관관계"]]]],["CM1","공통수학1",[["다항식",["다항식의 연산","항등식과 나머지정리","인수분해"]],["방정식과 부등식",["복소수와 이차방정식","이차방정식과 이차함수","여러 가지 방정식과 부등식"]],["경우의 수",["합의 법칙과 곱의 법칙","순열과 조합"]],["행렬",["행렬과 그 연산"]]]],["CM2","공통수학2",[["도형의 방정식",["평면좌표","직선의 방정식","원의 방정식","도형의 이동"]],["집합과 명제",["집합","명제"]],["함수와 그래프",["함수","유리함수와 무리함수"]]]],["ALG","대수",[["지수함수와 로그함수",["지수와 로그","지수함수와 로그함수"]],["삼각함수",["삼각함수","사인법칙과 코사인법칙"]],["수열",["등차수열과 등비수열","수열의 합","수학적 귀납법"]]]],["CAL1","미적분I",[["함수의 극한과 연속",["함수의 극한","함수의 연속"]],["미분",["미분계수와 도함수","도함수의 활용"]],["적분",["부정적분과 정적분","정적분의 활용"]]]],["PS","확률과 통계",[["경우의 수",["순열과 조합","이항정리"]],["확률",["확률의 뜻과 활용","조건부확률"]],["통계",["확률분포","통계적 추정"]]]],["CAL2","미적분II",[["수열의 극한",["수열의 극한","급수"]],["미분법",["여러 가지 함수의 미분","여러 가지 미분법","도함수의 활용"]],["적분법",["여러 가지 적분법","정적분의 활용"]]]],["GEO","기하",[["이차곡선",["이차곡선","이차곡선과 직선"]],["공간도형과 공간좌표",["직선과 평면","정사영","공간좌표"]],["벡터",["벡터의 연산","벡터의 성분과 내적"]]]]];
 const UNITS = {}, UNIT_IDS = [];
 TREE.forEach(([code, subject, chapters], si) => chapters.forEach(([chapter, sections], ci) =>
   sections.forEach((section, ki) => {
@@ -674,6 +681,20 @@ TREE.forEach(([code, subject, chapters], si) => chapters.forEach(([chapter, sect
     UNITS[id] = {id, si, subject, ci: ci + 1, chapter, ki: ki + 1, section, label: `${subject} > ${chapter} > ${section}`};
     UNIT_IDS.push(id);
   })));
+// 예전 단원 코드 → 지금 단원 코드 (중학교 수학을 학년별로 나누기 전의 MS-대단원-중단원)
+const OLD_UNITS = {"MS-1-1": "MS1-1-1", "MS-1-2": "MS1-1-2", "MS-1-3": "MS2-1-1", "MS-1-4": "MS3-1-1",
+  "MS-2-1": "MS1-2-1", "MS-2-2": "MS1-2-2", "MS-2-3": "MS1-2-3", "MS-2-4": "MS2-2-3", "MS-2-5": "MS2-2-2", "MS-2-6": "MS2-2-4",
+  "MS-2-7": "MS3-2-1", "MS-2-8": "MS3-2-2", "MS-2-9": "MS3-2-3",
+  "MS-3-1": "MS1-3-1", "MS-3-2": "MS1-3-2", "MS-3-3": "MS2-3-1", "MS-3-4": "MS2-3-2", "MS-3-5": "MS2-3-3", "MS-3-6": "MS3-3-1", "MS-3-7": "MS3-3-2",
+  "MS-4-1": "MS1-4-1", "MS-4-2": "MS2-4-1", "MS-4-3": "MS3-4-1", "MS-4-4": "MS3-4-2"};
+// 저장소에서 읽은 문항의 예전 단원 코드를 지금 코드로 바꾼다 (읽을 때마다 메모리에서만, 저장은 다음에 고칠 때)
+function upgradeProblem(p) {
+  const up = u => OLD_UNITS[u] || u, c = p.classification;
+  if (![p.unitId, c?.primary_unit_id, ...(c?.secondary_unit_ids || []), ...(p.generated || []).map(g => g.unit_id)].some(u => OLD_UNITS[u])) return p;
+  return {...p, unitId: p.unitId && up(p.unitId),
+    classification: c && {...c, primary_unit_id: up(c.primary_unit_id), secondary_unit_ids: (c.secondary_unit_ids || []).map(up)},
+    generated: (p.generated || []).map(g => ({...g, unit_id: g.unit_id && up(g.unit_id)}))};
+}
 const pad2 = n => String(n).padStart(2, "0");
 const unitPath = u => `${pad2(u.si)}_${u.subject}/${pad2(u.ci)}_${u.chapter}/${pad2(u.ki)}_${u.section}`;
 const curriculumText = () => TREE.map(([code, subject, chapters]) => `[${subject}]\n` + chapters.map(([chapter, sections], ci) =>
@@ -726,7 +747,7 @@ async function saveFile(name, data) {
 }
 
 /* ---------- 상태 ---------- */
-const state = {exams: new Map(), problems: new Map(), filter: {unit: null}, sort: {key: "", dir: 1}, selected: new Set(), ready: false, rev: 0};
+const state = {exams: new Map(), problems: new Map(), filter: {unit: null}, open: new Set(), sort: {key: "", dir: 1}, selected: new Set(), ready: false, rev: 0};
 const blobCache = new Map(); // 문항 id → PNG Blob
 const aiOK = () => PLATFORM.ai.ready();
 const canEdit = () => !PLATFORM.store.readOnly;
@@ -1708,28 +1729,39 @@ function examOptions(sel) {
   sel.value = state.exams.has(cur) ? cur : "";
 }
 function renderLibrary() { examOptions($("#f-exam")); renderGrid(); }
+// 단원 트리: 과목·대단원을 누르면 아래 단원이 펼쳐지고, 다시 누르면 접힌다 (누른 단원으로 문항도 거른다)
 function renderTree() {
   const ps = filteredProblems(true), count = {};
   for (const p of ps) {
     const key = p.unitId || "_none"; count[key] = (count[key] || 0) + 1;
     if (p.unitId) { const [code, ci] = p.unitId.split("-"); count[code] = (count[code] || 0) + 1; count[`${code}-${ci}`] = (count[`${code}-${ci}`] || 0) + 1; }
   }
-  const node = (key, label, cls) => `<button class="node ${cls} ${state.filter.unit === key ? "sel" : ""} ${count[key] ? "" : "empty"}" data-k="${key}"><span>${esc(label)}</span><span class="n">${count[key] || ""}</span></button>`;
-  let h = `<button class="node l1 ${state.filter.unit ? "" : "sel"}" data-k=""><span>전체</span><span class="n">${ps.length}</span></button>`;
-  for (const [code, subject, chapters] of TREE) {
-    h += node(code, subject, "l1");
-    if (!count[code] && state.filter.unit?.split("-")[0] !== code) continue;
-    chapters.forEach(([chapter, sections], ci) => {
-      h += node(`${code}-${ci + 1}`, chapter, "l2");
-      sections.forEach((s, ki) => { h += node(`${code}-${ci + 1}-${ki + 1}`, s, "l3"); });
-    });
-  }
+  const f = state.filter.unit; // 고른 단원의 위 단원은 펼쳐 둔다
+  if (f && f !== "_none") { const [code, ci, ki] = f.split("-"); if (ci) state.open.add(code); if (ki) state.open.add(`${code}-${ci}`); }
+  const node = (key, label, cls, kids) => `<button class="node ${cls} ${f === key ? "sel" : ""} ${count[key] ? "" : "empty"}" data-k="${key}"${kids ? ` aria-expanded="${state.open.has(key)}"` : ""}>` +
+    `<span class="lab">${kids ? `<span class="chev" aria-hidden="true">▶</span>` : cls === "l1" ? `<span class="chev"></span>` : ""}${esc(label)}</span><span class="n">${count[key] || ""}</span></button>` +
+    (kids ? `<div class="kids${state.open.has(key) ? " open" : ""}"><div>${kids}</div></div>` : "");
+  let h = `<button class="node l1 ${f ? "" : "sel"}" data-k=""><span class="lab"><span class="chev"></span>전체</span><span class="n">${ps.length}</span></button>`;
+  for (const [code, subject, chapters] of TREE)
+    h += node(code, subject, "l1", chapters.map(([chapter, sections], ci) =>
+      node(`${code}-${ci + 1}`, chapter, "l2", sections.map((sec, ki) => node(`${code}-${ci + 1}-${ki + 1}`, sec, "l3")).join(""))).join(""));
   h += node("_none", "미분류", "l1");
-  $("#tree").innerHTML = h;
-  $("#tree").querySelectorAll(".node").forEach(n => n.onclick = () => { state.filter.unit = n.dataset.k || null; renderGrid(); });
+  const tree = $("#tree");
+  tree.innerHTML = h;
+  tree.querySelectorAll(".node").forEach(n => n.onclick = () => {
+    const k = n.dataset.k, kids = n.hasAttribute("aria-expanded") ? n.nextElementSibling : null;
+    if (kids) { // 화면을 다시 그리지 않고 펼침 상태만 바꿔서 접고 펴는 움직임이 보이게 한다
+      const open = !state.open.has(k);
+      if (open) state.open.add(k); else state.open.delete(k);
+      n.setAttribute("aria-expanded", open); kids.classList.toggle("open", open);
+    }
+    state.filter.unit = k || null;
+    tree.querySelectorAll(".node.sel").forEach(x => x.classList.remove("sel")); n.classList.add("sel");
+    renderGrid(false);
+  });
 }
-function renderGrid() {
-  renderTree();
+function renderGrid(withTree = true) {
+  if (withTree) renderTree();
   const ps = filteredProblems(), f = state.filter.unit;
   const where = !f ? "전체" : f === "_none" ? "미분류" : (UNITS[f]?.label || (() => {
     const [code, ci] = f.split("-"); const t = TREE.find(x => x[0] === code);
@@ -2169,7 +2201,7 @@ $("#import-file").onchange = async e => {
     for (const p of data.problems) {
       const blob = dataURLtoBlob(p.image); blobCache.set(p.id, blob);
       const img = await PLATFORM.store.saveImage(p.id, blob);
-      await saveProblem({...p, ...img});
+      await saveProblem(upgradeProblem({...p, ...img}));
     }
     toast(`불러왔습니다: 시험 ${data.exams.length}개, 문항 ${data.problems.length}개`);
     renderLibrary();

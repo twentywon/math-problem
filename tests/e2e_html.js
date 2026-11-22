@@ -168,6 +168,27 @@ const sse = obj => {
   console.log("library:", await page.textContent("#lib-status"));
   await page.screenshot({path: `${OUT}/${MODE}-2-library.png`});
 
+  // 단원 트리 접기·펴기: 과목을 누르면 펼쳐지고 다시 누르면 접힌다
+  const cm1 = page.locator('#tree .node[data-k="CM1"]'), cm1kids = page.locator('#tree .node[data-k="CM1"] + .kids');
+  const treeState = async () => [await cm1.getAttribute("aria-expanded"), await cm1kids.evaluate(e => e.classList.contains("open")), (await page.textContent("#lib-status")).trim()];
+  const t0 = await treeState(); await cm1.click(); await page.waitForTimeout(350);
+  const t1 = await treeState();
+  await page.screenshot({path: `${OUT}/${MODE}-2b-tree-open.png`});
+  await page.locator('#tree .node[data-k="CM1-2"]').click(); await page.waitForTimeout(350);
+  const t2 = [await page.locator('#tree .node[data-k="CM1-2"]').getAttribute("aria-expanded"), (await page.textContent("#lib-status")).trim()];
+  await cm1.click(); await page.waitForTimeout(350);
+  const t3 = await treeState();
+  console.log("tree:", JSON.stringify({t0, t1, t2, t3}));
+  if (t0[0] !== "false" || t0[1] || t1[0] !== "true" || !t1[1] || t2[0] !== "true" || t3[0] !== "false" || t3[1]) fails.push("단원 트리 접기·펴기");
+  await page.locator('#tree .node[data-k=""]').click();
+  // 중학교 학년별 단원과 예전 단원 코드 바꾸기
+  const ms = await page.evaluate(() => {
+    const p = upgradeProblem({id: "x", unitId: "MS-4-3", classification: {primary_unit_id: "MS-4-3", secondary_unit_ids: ["MS-1-3", "CM1-1-1"]}, generated: [{unit_id: "MS-2-7"}, {unit_id: null}]});
+    return [p.unitId, p.classification.secondary_unit_ids.join(","), p.generated.map(g => g.unit_id).join(","), UNITS["MS2-3-3"]?.label, TREE.filter(t => t[0].startsWith("MS")).map(t => t[1]).join(",")];
+  });
+  console.log("middle school:", JSON.stringify(ms));
+  if (ms.join("|") !== "MS3-4-1|MS2-1-1,CM1-1-1|MS3-2-1,|중학교 2학년 > 도형과 측정 > 피타고라스 정리|중학교 1학년,중학교 2학년,중학교 3학년") fails.push("중학교 학년별 단원");
+
   // 문항 상세: 정답·풀이
   await page.locator("#grid .card", {hasText: "11"}).first().click();
   await page.waitForTimeout(400);
