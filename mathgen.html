@@ -385,14 +385,14 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
         <div class="mf"><b>단원</b><div id="mk-unit"></div><span class="muted">학년·과목만 고르면 그 안의 여러 단원에서, 영역까지 고르면 그 영역 안에서 고루 만듭니다.</span></div>
         <label class="mf"><b>난이도</b><select id="mk-diff">
           <option value="1">1 · 매우 쉬움</option><option value="2">2 · 쉬움</option><option value="3" selected>3 · 보통</option><option value="4">4 · 어려움</option><option value="5">5 · 매우 어려움</option><option value="mix">고르게 섞어서</option></select></label>
-        <label class="mf"><b>유형</b><select id="mk-type"><option value="5지선다">5지선다</option><option value="단답형">단답형</option><option value="mix">섞어서</option></select></label>
+        <label class="mf"><b>유형</b><select id="mk-type"><option value="auto" selected>저장된 문항처럼</option><option value="5지선다">5지선다</option><option value="단답형">단답형</option><option value="mix">섞어서</option></select></label>
         <label class="mf"><b>개수</b><input id="mk-count" type="number" min="1" max="20" value="5"></label>
       </div>
       <textarea id="mk-extra" rows="2" placeholder="추가 요청 (예: 실생활 상황으로, 그래프 해석 문제 위주로, 계산은 간단하게)" aria-label="추가 요청"></textarea>
       <div class="row"><label><input type="checkbox" id="mk-verify" checked> 따로 다시 풀어 검산</label>
         <label for="mk-target">저장할 출처</label><input id="mk-target" type="text" value="AI 생성 문제" style="min-width:160px">
         <span class="spacer"></span><button class="btn primary" id="mk-go">문제 만들기</button></div>
-      <p class="muted" id="mk-note" style="margin:0">난이도는 저장소에 있는 문항들의 상대 난이도에 맞춥니다. 만든 문제는 시험지 모양 이미지로 저장소에도 저장되어, 분류된 문항처럼 단원별로 보고 표·엑셀로 내보낼 수 있습니다.</p>
+      <p class="muted" id="mk-note" style="margin:0">저장소에 있는 실제 문항(같은 단원 → 같은 과목 → 전체 순)의 문장 투·조건 제시 방식·선택지와 &lt;보기&gt; 구성·배점 같은 형식과 유형을 참고하고, 난이도도 그 문항들 기준으로 맞춥니다. 저장된 문항과 너무 비슷하게 나온 문제는 버리고 다시 만듭니다. 만든 문제는 시험지 모양 이미지로 저장소에도 저장되어, 분류된 문항처럼 단원별로 보고 표·엑셀로 내보낼 수 있습니다.</p>
       <div class="muted" id="mk-status" role="status"></div>
     </div>
     <div id="mk-results"></div>
@@ -2560,6 +2560,36 @@ function makeScope() {
   const t = TREE.find(x => x[0] === subj);
   return {ids, label: chap ? `${t[1]} > ${t[2][chap - 1][0]}` : t[1]};
 }
+// 형식 참고용 실제 문항: 고른 범위 → 같은 과목 → 전체 순으로 찾는다 (AI 가 만든 출처는 빼서 스스로를 베끼지 않게)
+function styleRefs(scope, diff) {
+  const real = [...state.problems.values()].filter(p => p.classification?.transcription && state.exams.get(p.examId)?.kind !== "generated");
+  const subj = scope.ids[0].split("-")[0];
+  const pools = [real.filter(p => scope.ids.includes(p.unitId)), real.filter(p => str(p.unitId).startsWith(subj + "-")), real];
+  const at = pools.findIndex(x => x.length), pool = at < 0 ? [] : pools[at];
+  const target = diff === "mix" ? 3 : +diff;
+  const picked = [...pool].sort((a, b) => Math.abs((diffLevel(a) || 3) - target) - Math.abs((diffLevel(b) || 3) - target) || byName(a.examTitle, b.examTitle) || a.order - b.order).slice(0, 4);
+  return {pool, picked, where: ["고른 단원", "같은 과목", "저장소 전체"][at] || ""};
+}
+// 저장된 문항의 형식 요약 (유형·<보기>형·그림·배점 비율)
+function styleProfile(pool) {
+  const n = pool.length; if (!n) return "";
+  const pct = k => Math.round(k / n * 100), cnt = fn => pool.filter(fn).length;
+  const pts = {};
+  pool.forEach(p => { const v = pointsOf(p); if (v) pts[v] = (pts[v] || 0) + 1; });
+  return `5지선다 ${pct(cnt(p => qType(p) === "5지선다"))}%, 단답형 ${pct(cnt(p => qType(p) === "단답형"))}%` +
+    `, <보기> ㄱ·ㄴ·ㄷ 고르기형 ${pct(cnt(p => /<\s*보기\s*>|ㄱ\s*[.,]\s*ㄴ/.test(p.classification.transcription)))}%` +
+    `, 그림·그래프가 있는 문항 ${pct(cnt(p => p.classification.figure_description))}%` +
+    `, 배점 ${Object.entries(pts).sort().map(([k, v]) => `${k}점 ${pct(v)}%`).join(" ") || "정보 없음"}`;
+}
+// 겹침 검사: 기호·공백을 뺀 세 글자 조각이 얼마나 같은지 (1 이면 같은 문제)
+const normQ = t => str(t).replace(/\\[a-zA-Z]+|[\s$.,:;!?()[\]{}'"`~·…①②③④⑤<>]/g, "").toLowerCase();
+function grams(t) { const x = normQ(t), g = new Set(); for (let i = 0; i + 3 <= x.length; i++) g.add(x.slice(i, i + 3)); if (!g.size && x) g.add(x); return g; }
+function similarity(a, b) {
+  const A = grams(a), B = grams(b); if (!A.size || !B.size) return 0;
+  let k = 0; for (const x of A) if (B.has(x)) k++;
+  return k / Math.max(A.size, B.size);
+}
+const TOO_SIMILAR = 0.6;
 function renderMake() {
   if (!$("#mk-unit").firstChild) { $("#mk-unit").innerHTML = unitPickerHTML(""); wireUnitPicker($("#mk-unit"), () => {}); }
   const ok = aiOK() && canEdit();
@@ -2607,20 +2637,42 @@ $("#mk-go").onclick = async () => {
     if (!ex) { ex = {id: newId("e"), title, kind: "generated", fileName: "", fileHash: "", pages: 0, addedAt: new Date().toISOString()}; await PLATFORM.store.putExam(ex); }
     const mine = [...state.problems.values()].filter(p => p.examId === ex.id);
     let order = Math.max(0, ...mine.map(p => p.order || 0)), no = Math.max(0, ...mine.map(p => Number(p.number) || 0));
-    const made = [];
+    const made = [], rejected = [], refs = styleRefs(scope, diff);
+    const refImages = await Promise.all(refs.picked.slice(0, 3).map(p => problemBlob(p).catch(() => null))).then(a => a.filter(Boolean));
+    // 겹침 검사 대상: 저장된 모든 문항 + 이번에 만든 문제
+    const seen = [...state.problems.values()].filter(p => p.classification?.transcription).map(p => ({text: p.classification.transcription, label: `${p.examTitle} ${p.number}번`}));
+    const refText = refs.picked.length ? [
+      `[참고 문항] 저장소의 실제 문항 ${refs.picked.length}개(${refs.where})다. 앞의 ${refImages.length}개는 이미지도 함께 보낸다.`,
+      `이 문항들의 문장 투, 조건을 주는 방식, 선택지·<보기> 구성, 배점 표기, 그림을 쓰는 방식 같은 '형식과 유형'만 본떠라.`,
+      `절대 이 문항들을 그대로 옮기거나 수치·이름만 바꿔 쓰지 말고, 상황·함수·조건·묻는 것을 새로 만들어라.`,
+      ...refs.picked.map((p, i) => `${i + 1}) (${qType(p)}${pointsOf(p) ? `, ${pointsOf(p)}점` : ""}, 상대 난이도 ${diffLevel(p) || "?"}/5, ${UNITS[p.unitId]?.section || "미분류"}) ${p.classification.transcription.replace(/\s+/g, " ").slice(0, 700)}`),
+      `[저장된 문항의 형식] ${refs.where} ${refs.pool.length}문항 기준: ${styleProfile(refs.pool)}`].join("\n") : "";
+    let attempts = 0;
     for (let done = 0; done < n;) {
       const k = Math.min(5, n - done); // 한 번에 다섯 문제씩
+      if (++attempts > Math.ceil(n / 5) + 4) { status(`저장된 문항과 겹치지 않는 문제를 ${done}개만 만들었습니다. 다시 눌러 주세요.`); break; }
       status(`문제를 만드는 중… ${done}/${n} (한 번에 ${k}문제, 1~3분 걸릴 수 있습니다)`);
       const diffText = diff === "mix" ? "1~5 를 고르게 섞어서 (각 문제의 difficulty 에 표시)" : `${diff}/5 — ${MAKE_DIFF[diff]}. 모든 문제의 difficulty 를 ${diff} 로`;
-      const typeText = type === "mix" ? "5지선다와 단답형을 섞어서" : type === "5지선다" ? "모두 5지선다 (choices 5개, answer 는 번호)" : "모두 단답형 (choices 는 [], answer 는 0~999 정수 권장)";
-      const data = await ask({system: GEN_SYSTEM, schema: GEN_SCHEMA, effort: "high", fresh: true, text: [
+      const typeText = type === "auto" ? (refs.pool.length ? "참고 문항과 [저장된 문항의 형식] 비율에 맞춰 (5지선다면 choices 5개·answer 는 번호, 단답형이면 choices 는 [])" : "5지선다와 단답형을 섞어서")
+        : type === "mix" ? "5지선다와 단답형을 섞어서" : type === "5지선다" ? "모두 5지선다 (choices 5개, answer 는 번호)" : "모두 단답형 (choices 는 [], answer 는 0~999 정수 권장)";
+      const data = await ask({system: GEN_SYSTEM, schema: GEN_SCHEMA, effort: "high", fresh: true, images: refImages, text: [
         `[새 문제 만들기] 원본 문제 없이 아래 조건에 맞는 새 문제 ${k}개를 만들어라. kind 는 모두 "유사문제" 로 둔다.`,
         `단원 범위: ${scope.label}`, `쓸 수 있는 단원 코드: ${scope.ids.join(", ")}${scope.ids.length > 1 ? " (여러 단원에 고루 나눠서)" : ""}`,
         `난이도: ${diffText}`, `유형: ${typeText}`,
         made.length ? `이미 만든 문제와 겹치지 않게 다른 상황·수치·접근으로 만든다. 이미 만든 제목: ${made.map(g => g.title).join(", ")}` : "",
-        extra ? `추가 요청: ${extra}` : "", anchorText(new Set())].filter(Boolean).join("\n")});
-      const batch = (Array.isArray(data?.problems) ? data.problems : []).map(cleanGenerated).filter(Boolean).slice(0, k);
-      if (!batch.length) throw new Error("AI 가 문제를 돌려주지 않았습니다. 다시 시도하세요.");
+        rejected.length ? `다음 문제는 저장된 문항을 거의 그대로 옮겨서 버렸다. 이렇게 만들지 마라: ${rejected.map(r => r.title).join(", ")}` : "",
+        extra ? `추가 요청: ${extra}` : "", refText, anchorText(new Set())].filter(Boolean).join("\n")});
+      const got = (Array.isArray(data?.problems) ? data.problems : []).map(cleanGenerated).filter(Boolean);
+      if (!got.length) throw new Error("AI 가 문제를 돌려주지 않았습니다. 다시 시도하세요.");
+      // 저장된 문항(또는 이번에 만든 문제)과 거의 같은 문제는 버린다
+      const batch = [];
+      for (const g of got) {
+        if (batch.length >= k) break;
+        const text = genText(g, 0), hit = seen.find(x => similarity(text, x.text) >= TOO_SIMILAR);
+        if (hit) { rejected.push({title: g.title, like: hit.label}); continue; }
+        batch.push(g); seen.push({text, label: `새 문제 '${g.title}'`});
+      }
+      if (!batch.length) continue;
       for (const g of batch) {
         g.kind = "새 문제";
         if (!scope.ids.includes(g.unit_id)) g.unit_id = scope.ids[0];
@@ -2636,7 +2688,8 @@ $("#mk-go").onclick = async () => {
       renderMakeResults();
     }
     const bad = made.filter(g => g.verification && !g.verification.passed).length;
-    status(`${made.length}문제를 만들어 '${ex.title}' 출처에 저장했습니다${bad ? ` (검산 불일치 ${bad}개는 꼭 확인하세요)` : ""}`);
+    if (made.length >= n) status(`${made.length}문제를 만들어 '${ex.title}' 출처에 저장했습니다${bad ? ` (검산 불일치 ${bad}개는 꼭 확인하세요)` : ""}` +
+      (rejected.length ? ` · 저장된 문항과 거의 같아 버린 문제 ${rejected.length}개 (${rejected.map(r => r.like).join(", ")})` : ""));
   } catch (e) { status("실패: " + e.message); }
   makeState.busy = false; $("#mk-go").disabled = !aiOK() || !canEdit();
   onStoreChange();

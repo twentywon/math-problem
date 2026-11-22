@@ -20,7 +20,26 @@ function local(url) {
 }
 // 가짜 AI: 지시문 내용으로 어떤 작업인지 구분해 그럴듯한 JSON 을 돌려준다
 const units = ["CM1-2-2", "CM2-1-3", "ALG-1-1", "CM1-2-3"];
-let nClass = 0, anchored = 0;
+let nClass = 0, anchored = 0, nMake = 0;
+const makePrompts = [];
+// ④ 문제 만들기용 가짜 응답: 부를 때마다 서로 다른 문제. 첫 응답의 첫 문제는 저장된 문항을 그대로 옮긴 것 (버려져야 함)
+const MAKE_POOL = [
+  ["등차수열의 항", "첫째항이 $3$, 공차가 $2$ 인 등차수열 $\\{a_n\\}$ 에 대하여 $a_{10}$ 의 값은?", ["$19$", "$21$", "$23$", "$25$", "$27$"], "2"],
+  ["다항식의 나머지", "다항식 $x^3-2x+5$ 를 $x-2$ 로 나눈 나머지를 구하시오.", [], "9"],
+  ["복소수의 계산", "$(1+i)^2$ 의 값은? (단, $i=\\sqrt{-1}$)", ["$0$", "$2$", "$2i$", "$-2i$", "$1+i$"], "3"],
+  ["연립부등식", "연립부등식 $2x-1>3$, $x+4\\le 10$ 을 만족시키는 정수 $x$ 의 개수를 구하시오.", [], "4"],
+  ["순열의 수", "서로 다른 5 권의 책 중에서 3 권을 골라 일렬로 꽂는 방법의 수는?", ["$20$", "$30$", "$60$", "$90$", "$120$"], "3"],
+  ["인수분해", "$x^2-5x+6$ 을 인수분해하면 $(x-a)(x-b)$ 일 때, $a^2+b^2$ 의 값을 구하시오. (단, $a<b$)", [], "13"]];
+function makeAnswer() {
+  const out = [];
+  if (nMake === 0) out.push({kind: "유사문제", title: "베낀 문제", statement: "함수 $y=-x(x-6)$ 의 그래프 ...", choices: [], figure_description: "", figure_svg: "", answer: "9", solution_steps: ["베낌"], shared_concepts: [], relation_to_original: "", unit_id: "CM1-2-2", difficulty: 4});
+  for (let i = 0; i < 2; i++) {
+    const [title, statement, choices, answer] = MAKE_POOL[(nMake * 2 + i) % MAKE_POOL.length];
+    out.push({kind: "유사문제", title, statement, choices, figure_description: "", figure_svg: "", answer, solution_steps: ["계산한다."], shared_concepts: ["계산"], relation_to_original: "", unit_id: "CM1-1-1", difficulty: 4});
+  }
+  nMake++;
+  return {problems: out};
+}
 function answerFor(prompt) {
   if (prompt.includes("연결 확인")) return {ok: true};
   if (prompt.includes("레이아웃을 읽는 도구")) return {columns: [{x0: 0, x1: 1000}], problems: [{number: 1, column: 0, y_top: 30}, {number: 2, column: 0, y_top: 520}], groups: [], column_bottoms: [990]};
@@ -28,6 +47,7 @@ function answerFor(prompt) {
     const n = (prompt.match(/\[문제 \d+\]/g) || []).length;
     return {items: Array.from({length: n}, (_, i) => ({index: i + 1, answer: i === 1 ? "7" : "3", well_posed: true, issues: ""}))};
   }
+  if (prompt.includes("[새 문제 만들기]")) { makePrompts.push(prompt); return makeAnswer(); }
   if (prompt.includes("출제 경험")) return {problems: [
     {kind: "유사문제", title: "넓이가 최대인 삼각형", statement: "이차함수 $y=-x(x-8)$ 의 그래프 위의 점 P 에 대하여 삼각형 OAP 의 넓이가 최대일 때, 점 P 의 $y$좌표는?",
       choices: ["$12$", "$14$", "$16$", "$18$", "$20$"], figure_description: "포물선과 x축의 두 교점 O, A, 포물선 위의 점 P",
@@ -429,6 +449,11 @@ const sse = obj => {
       scores: ps.map(p => p.classification?.difficulty_score), images: ps.filter(p => p.image).length, cards: document.querySelectorAll("#mk-results .gen").length};
   });
   console.log("make:", JSON.stringify(mk));
+  const mp = makePrompts[0] || "";
+  console.log("make prompt:", JSON.stringify({refs: mp.includes("[참고 문항]"), profile: (mp.match(/\[저장된 문항의 형식\][^\n]*/) || [""])[0].slice(0, 140), noCopy: mp.includes("그대로 옮기거나")}));
+  if (!mp.includes("[참고 문항]") || !mp.includes("[저장된 문항의 형식]") || !mp.includes("그대로 옮기거나")) fails.push("문제 만들기: 저장된 문항 형식 참고");
+  if (!/버린 문제 1개/.test(mk.status)) fails.push("문제 만들기: 저장된 문항과 같은 문제 버리기 " + mk.status);
+  if (makePrompts.length > 1 && !makePrompts[1].includes("베낀 문제")) fails.push("문제 만들기: 버린 문제를 다음 요청에 알림");
   if (mk.kind !== "generated" || mk.nums.join() !== "1,2,3" || !mk.units.every(u => /^CM1-/.test(u)) || !mk.scores.every(x => x === 8) || mk.images !== 3 || mk.cards !== 3)
     fails.push("문제 만들기 탭: " + JSON.stringify(mk));
   await page.screenshot({path: `${OUT}/${MODE}-11-make.png`, fullPage: true});
