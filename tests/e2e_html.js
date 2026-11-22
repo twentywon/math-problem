@@ -225,6 +225,13 @@ const sse = obj => {
   console.log("gen image:", JSON.stringify(genImg));
   if (!(genImg[0] >= 1200 && genImg[1] > 300)) fails.push("만든 문제 이미지: " + genImg);
   await page.screenshot({path: `${OUT}/${MODE}-5b-gen-image.png`});
+  // 상세 창이 통째로 스크롤되어 머리(번호·닫기)가 밀려 올라가지 않아야 한다 (수식이 많은 풀이를 펼친 상태)
+  await page.locator("#detail .gen .g-view button[data-v=text]").first().click();
+  for (const s of await page.locator("#detail .gen details").all()) await s.evaluate(d => d.open = true);
+  await page.waitForTimeout(300);
+  const dlg = await page.evaluate(() => { const d = document.querySelector("#detail"); return [d.scrollHeight - d.clientHeight, d.querySelector(".d-head").getBoundingClientRect().top - d.getBoundingClientRect().top]; });
+  console.log("dialog overflow:", JSON.stringify(dlg));
+  if (dlg[0] > 2 || dlg[1] < 0) fails.push("상세 창이 통째로 스크롤됨: " + dlg);
   const pngData = await page.evaluate(() => document.querySelector("#detail .gen .gen-img").src.split(",")[1]);
   fs.writeFileSync(`${OUT}/${MODE}-gen-problem.png`, Buffer.from(pngData, "base64"));
   const txt = await page.evaluate(() => genText(state.problems.get(detailState.id).generated[0], 1));
