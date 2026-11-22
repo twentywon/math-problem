@@ -120,23 +120,30 @@ def detect_columns(page: pymupdf.Page, lines: list[_Line]) -> list[Column]:
     for ln in usable:
         for x in range(max(0, int(ln.x0)), min(len(cover), int(ln.x1) + 1)):
             cover[x] += 1
-    tol = int(0.03 * len(usable))  # 가운데를 가로지르는 줄이 몇 개 있어도 허용
     lo, hi = int(W * 0.3), int(W * 0.7)
-    best = (0, 0)  # (길이, 시작)
-    run_start = None
-    for x in range(lo, hi + 1):
-        if cover[x] <= tol:
-            if run_start is None:
-                run_start = x
-        else:
-            if run_start is not None and x - run_start > best[0]:
-                best = (x - run_start, run_start)
-            run_start = None
-    if run_start is not None and hi + 1 - run_start > best[0]:
-        best = (hi + 1 - run_start, run_start)
+
+    def find_gap(tol: int) -> tuple[int, int]:
+        best = (0, 0)  # (길이, 시작)
+        run_start = None
+        for x in range(lo, hi + 2):
+            if x <= hi and cover[x] <= tol:
+                if run_start is None:
+                    run_start = x
+            elif run_start is not None:
+                if x - run_start > best[0]:
+                    best = (x - run_start, run_start)
+                run_start = None
+        return best
+
+    # 완전히 빈 띠를 먼저 찾고, 없으면 가운데를 가로지르는 줄이 몇 개 있어도 허용
+    best = find_gap(0)
+    if best[0] < 8:
+        best = find_gap(int(0.03 * len(usable)))
     if best[0] >= 8:
-        g0, g1 = best[1], best[1] + best[0]
-        return [Column(max(0, left - 4), g0 + 1), Column(g1 - 1, min(W, right + 4))]
+        # 단 경계는 빈 띠의 가운데(구분선 자리)에서 3pt 떨어진 곳: 글자 폭 오차로 끝 글자가 잘리지 않게
+        mid = best[1] + best[0] / 2
+        m = max(1, min(3, best[0] / 2 - 1))
+        return [Column(max(0, left - 4), mid - m), Column(mid + m, min(W, right + 4))]
     return [Column(max(0, left - 4), min(W, right + 4))]
 
 
@@ -197,6 +204,20 @@ def _content_bottoms(page, lines, columns, footer_tops) -> list[float]:
     return bottoms
 
 
+def _column_left(col_lines: list[_Line], col: Column) -> float:
+    """단의 왼쪽 끝: 단 안에서 시작하고, 같은 위치(±3pt)에서 시작하는 줄이 2개 이상인 가장 왼쪽 x.
+
+    가운데 제목처럼 단 경계에 걸친 조각 하나 때문에 기준이 틀어지지 않게 한다.
+    """
+    xs = sorted(ln.x0 for ln in col_lines if ln.x0 >= col.x0 - 2)
+    if not xs:
+        return min(ln.x0 for ln in col_lines)
+    for x in xs:
+        if sum(1 for y in xs if abs(y - x) <= 3) >= 2:
+            return x
+    return xs[0]
+
+
 def _text_markers(page_no: int, lines: list[_Line], columns: list[Column]) -> list[Marker]:
     body_sizes = [ln.style[1] for ln in lines if ln.style[1] > 0]
     body = median(body_sizes) if body_sizes else 0
@@ -207,7 +228,7 @@ def _text_markers(page_no: int, lines: list[_Line], columns: list[Column]) -> li
             by_col.setdefault(c, []).append(ln)
     markers: list[Marker] = []
     for c, col_lines in by_col.items():
-        col_left = min(ln.x0 for ln in col_lines)
+        col_left = _column_left(col_lines, columns[c])
         for ln in col_lines:
             if ln.x0 - col_left > 14:  # 문제 번호는 단의 왼쪽 끝에 붙어 있다
                 continue
@@ -377,8 +398,18 @@ def compute_crops(doc: pymupdf.Document, layouts: list[PageLayout]) -> list[Prob
 
 def trim_whitespace(png: bytes, pad: int = 16, threshold: int = 235) -> bytes:
     img = Image.open(io.BytesIO(png)).convert("RGB")
-    gray = img.convert("L").point(lambda v: 255 if v < threshold else 0)
-    bbox = gray.getbbox()
+    mask = img.convert("L").point(lambda v: 255 if v < threshold else 0)
+    # 가장자리 근처에서 위아래로 거의 끝까지 이어진 세로줄(단 구분선, 테두리)은 지운다
+    w, h = mask.size
+    edge = max(24, int(w * 0.06))
+    px = mask.load()
+    draw = ImageDraw.Draw(img)
+    for x in list(range(min(edge, w))) + list(range(max(edge, w - edge), w)):
+        if sum(1 for y in range(h) if px[x, y]) > h * 0.85:
+            for y in range(h):
+                px[x, y] = 0
+            draw.line((x, 0, x, h), fill=(255, 255, 255))
+    bbox = mask.getbbox()
     if bbox:
         x0, y0, x1, y1 = bbox
         img = img.crop((max(0, x0 - pad), max(0, y0 - pad), min(img.width, x1 + pad), min(img.height, y1 + pad)))
