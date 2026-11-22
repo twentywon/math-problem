@@ -22,6 +22,7 @@ const units = ["CM1-2-2", "CM2-1-3", "ALG-1-1", "CM1-2-3"];
 let nClass = 0, anchored = 0;
 function answerFor(prompt) {
   if (prompt.includes("연결 확인")) return {ok: true};
+  if (prompt.includes("레이아웃을 읽는 도구")) return {columns: [{x0: 0, x1: 1000}], problems: [{number: 1, column: 0, y_top: 30}, {number: 2, column: 0, y_top: 520}], groups: [], column_bottoms: [990]};
   if (prompt.includes("검토자")) {
     const n = (prompt.match(/\[문제 \d+\]/g) || []).length;
     return {items: Array.from({length: n}, (_, i) => ({index: i + 1, answer: i === 1 ? "7" : "3", well_posed: true, issues: ""}))};
@@ -295,6 +296,75 @@ const sse = obj => {
     console.log("sample calls:", JSON.stringify(await page.evaluate(() => window.__calls.map(c => `${c.imgs}/${c.tier}${c.cache === false ? "/fresh" : ""}`))));
     console.log("saved:", JSON.stringify(await page.evaluate(() => window.__saved.map(s => s[0]))));
   }
+  // 문제 이미지 넣기 (다운로드 버전은 새로고침 뒤 AI 연결을 다시 확인)
+  if (MODE === "html") {
+    await page.click("nav.tabs button[data-tab=settings]");
+    await page.selectOption("#s-provider", "anthropic"); await page.fill("#s-key", "sk-ant-test"); await page.click("#s-save");
+    await page.waitForTimeout(300);
+  }
+  await page.click("nav.tabs button[data-tab=ingest]");
+  const mkPng = async (lines, h = 260) => Buffer.from((await page.evaluate(([lines, h]) => {
+    const c = document.createElement("canvas"); c.width = 900; c.height = h;
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, 900, h); g.fillStyle = "#111"; g.font = "28px sans-serif";
+    lines.forEach(([t, y]) => g.fillText(t, 40, y)); return c.toDataURL("image/png").split(",")[1];
+  }, [lines, h])), "base64");
+  // 한글 파일 이름은 경로 대신 버퍼로 넘긴다 (Playwright 가 한글 경로 파일을 넘기지 못하는 경우가 있다)
+  const png = async (name, ...a) => ({name, mimeType: "image/png", buffer: await mkPng(...a)});
+  const imgA = await png("문제_7.png", [["7. x² - 5x + 6 = 0 의 두 근의 합은?", 80], ["① 1  ② 3  ③ 5  ④ 6  ⑤ 7", 160]]);
+  const imgB = await png("캡처.png", [["함수 f(x) = 2x + 1 에 대하여 f(3) 의 값은?", 80]]);
+  const imgC = await png("추가.png", [["삼각형 ABC 에서 AB = 3, BC = 4, ∠B = 90° 일 때 CA 는?", 80]]);
+  const imgD = await png("두문제.png", [["1. 첫 번째 문제입니다. 2 + 3 의 값은?", 60], ["2. 두 번째 문제입니다. 4 × 5 의 값은?", 600]], 1100);
+  const lastJob = () => page.evaluate(() => { const j = document.querySelector("#jobs > .panel"); return j ? j.querySelector(".status").textContent : ""; });
+  // 새 작업 칸이 생기고 그 칸이 끝날 때까지 기다린다 (넣기 전에 jobsBefore() 를 불러 둔다)
+  let nJobs = 0;
+  const jobsBefore = async () => { nJobs = await page.locator("#jobs > .panel").count(); };
+  const waitJob = async () => {
+    try { await page.waitForFunction(n => document.querySelectorAll("#jobs > .panel").length > n && /완료|오류|넣지 않았/.test(document.querySelector("#jobs > .panel .status")?.textContent || ""), nJobs, {timeout: 30000}); }
+    catch (e) { console.log("job timeout; errors so far:", errors); throw e; }
+    await page.waitForTimeout(300); return lastJob();
+  };
+  const imgExam = () => page.evaluate(() => { const e = [...state.exams.values()].filter(e => e.kind === "images").sort((a, b) => a.addedAt < b.addedAt ? -1 : 1)[0];
+    return e ? {id: e.id, title: e.title, nums: [...state.problems.values()].filter(p => p.examId === e.id).sort((a, b) => a.order - b.order).map(p => p.number)} : null; });
+  // ① 두 장을 한 번에: 한 출처, 번호는 파일 이름(7) → 이어서 8
+  await jobsBefore(); await page.setInputFiles("#file", [imgA, imgB]);
+  const st1 = await waitJob(), ex1 = await imgExam();
+  console.log("images:", st1, JSON.stringify(ex1));
+  if (!ex1 || ex1.nums.join() !== "7,8" || !/이미지 2장/.test(ex1.title)) fails.push("이미지 넣기: " + JSON.stringify(ex1));
+  await page.screenshot({path: `${OUT}/${MODE}-10-images.png`});
+  // ② 같은 출처에 추가: 번호 9
+  await page.focus("#img-target"); await page.selectOption("#img-target", ex1.id, {timeout: 5000});
+  await jobsBefore(); await page.setInputFiles("#file", [imgC]);
+  await waitJob(); const ex2 = await imgExam();
+  console.log("append:", JSON.stringify(ex2.nums), "exams:", await page.evaluate(() => [...state.exams.values()].filter(e => e.kind === "images").length));
+  if (ex2.nums.join() !== "7,8,9") fails.push("이미지 추가: " + ex2.nums);
+  // ③ 같은 이미지를 다시 넣으면 건너뜀
+  await jobsBefore(); await page.setInputFiles("#file", [imgA]);
+  const st3 = await waitJob(); const ex3 = await imgExam();
+  console.log("dup image:", st3, JSON.stringify(ex3.nums));
+  if (ex3.nums.join() !== "7,8,9" || !/이미 저장된 이미지/.test(st3)) fails.push("같은 이미지 건너뛰기: " + st3);
+  // ④ 한 장에 두 문제: AI 로 나누기 (새 출처)
+  await page.selectOption("#img-target", "");
+  await page.check("#img-split");
+  await jobsBefore(); await page.setInputFiles("#file", [imgD]);
+  const st4 = await waitJob();
+  const splitNos = await page.evaluate(() => { const e = [...state.exams.values()].find(e => e.title === "두문제"); return e ? [...state.problems.values()].filter(p => p.examId === e.id).map(p => p.number).sort().join() : ""; });
+  console.log("image split:", st4, splitNos);
+  if (splitNos !== "1,2") fails.push("이미지 여러 문제 나누기: " + splitNos);
+  await page.uncheck("#img-split");
+  // ⑤ 붙여넣기
+  const nBefore = await page.evaluate(() => state.problems.size); await jobsBefore();
+  await page.evaluate(async b64 => {
+    const bin = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
+    const dt = new DataTransfer(); dt.items.add(new File([bin], "image.png", {type: "image/png"}));
+    document.body.dispatchEvent(new ClipboardEvent("paste", {clipboardData: dt, bubbles: true}));
+  }, (await mkPng([["붙여넣은 문제: 3 + 4 의 값은?", 80]])).toString("base64"));
+  await waitJob();
+  const pasted = await page.evaluate(n => [state.problems.size - n, [...state.exams.values()].some(e => /^붙여넣기_/.test(e.title))], nBefore);
+  console.log("paste:", JSON.stringify(pasted));
+  if (pasted[0] !== 1 || !pasted[1]) fails.push("붙여넣기: " + pasted);
+  console.log("title:", await page.title());
+  if (await page.title() !== "수학 문제 도우미") fails.push("제목");
+
   await page.setViewportSize({width: 400, height: 820});
   await page.click("nav.tabs button[data-tab=library]");
   console.log("phone scrollWidth:", await page.evaluate(() => document.documentElement.scrollWidth));
