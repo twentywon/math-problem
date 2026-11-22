@@ -141,6 +141,13 @@ aside.tree{background:var(--surface);border:1px solid var(--rule);border-radius:
 .kids.open{grid-template-rows:1fr}
 .kids>div{overflow:hidden;min-height:0}
 .kids:not(.open)>div{visibility:hidden;transition:visibility 0s .22s}
+.node.drop-ok{outline:2px dashed var(--omr);outline-offset:-2px;background:var(--omr-weak)}
+#grid .card[draggable="true"]{cursor:grab}
+#grid .card.dragging{opacity:.45}
+.unit-pick{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.unit-pick select{flex:1 1 140px;min-width:0}
+.unit-now{font-size:13px;color:var(--muted)}
+.drag-hint{font-size:12px;color:var(--muted);margin:2px 0 6px}
 
 /* ---------- 정답 표시 (OMR) ---------- */
 .omr{display:inline-flex;gap:6px}
@@ -321,6 +328,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
         <span class="muted" id="t-sel">선택 0개</span>
         <button class="btn sm" id="t-classify">선택 문항 분류</button>
         <button class="btn sm" id="t-solve">선택 문항 AI 풀이</button>
+        <button class="btn sm" id="t-move">선택 문항 단원 옮기기</button>
         <span class="muted">|</span>
         <label>유사 <input type="number" id="t-sim" min="0" max="6" value="2"></label>
         <label>변형 <input type="number" id="t-var" min="0" max="6" value="1"></label>
@@ -350,6 +358,9 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 <dialog id="zoom" style="width:auto"><img id="zoom-img" alt="페이지 확대"></dialog>
 <dialog id="confirm" style="width:auto"><div class="confirm-box"><p id="confirm-msg" style="margin:0"></p>
   <div class="row" style="justify-content:flex-end"><button class="btn" id="confirm-no">취소</button><button class="btn primary" id="confirm-yes">확인</button></div></div></dialog>
+<dialog id="move" style="width:fit-content;max-width:calc(100vw - 32px)"><div class="confirm-box" style="max-width:560px;width:min(560px,calc(100vw - 40px))"><p id="move-msg" style="margin:0"></p>
+  <div id="move-pick"></div>
+  <div class="row" style="justify-content:flex-end"><button class="btn ghost" id="move-none">미분류로 되돌리기</button><button class="btn" id="move-cancel">취소</button><button class="btn primary" id="move-ok" disabled>옮기기</button></div></div></dialog>
 <dialog id="dup" style="width:auto"><div class="confirm-box" style="max-width:480px"><p id="dup-msg" style="margin:0"></p>
   <label><input type="checkbox" id="dup-inherit" checked> 같은 번호 문항의 분류·풀이·실제 정답·만든 문제를 이어받기</label>
   <p class="muted" style="margin:0">교체하면 새로 자른 문항으로 바뀌고, 이어받지 않은 문항만 다시 분류합니다.</p>
@@ -1239,7 +1250,9 @@ async function classifyMany(ids, onProgress) {
     try {
       for (const [p, r] of await classifyBatch(batch)) {
         if (r instanceof Error) { errors.push(`${p.number}번: ${r.message}`); continue; }
-        const cur = {...(state.problems.get(p.id) || p), classification: r, unitId: r.primary_unit_id, unitManual: false};
+        // 사람이 직접 옮긴 단원은 다시 분류해도 그대로 둔다
+        const prev = state.problems.get(p.id) || p, manual = prev.unitManual && prev.unitId;
+        const cur = {...prev, classification: r, unitId: manual ? prev.unitId : r.primary_unit_id, unitManual: !!manual};
         await saveProblem(cur);
         onProgress?.(done, todo.length, cur);
       }
@@ -1443,6 +1456,7 @@ function updateStatus() {
   for (const id of ["#btn-classify-all", "#t-classify", "#t-solve", "#t-gen"]) $(id).hidden = !ok || !canEdit();
   $("#btn-zip").hidden = $("#t-xlsx").hidden = $("#t-csv").hidden = !PLATFORM.canSave();
   $("#btn-import").hidden = !canEdit();
+  $("#t-move").hidden = !canEdit();
   $("#btn-folder").hidden = !PLATFORM.folderSave;
   $("#btn-watch").hidden = !PLATFORM.folderWatch || !canEdit();
 }
@@ -1746,6 +1760,7 @@ function renderTree() {
     h += node(code, subject, "l1", chapters.map(([chapter, sections], ci) =>
       node(`${code}-${ci + 1}`, chapter, "l2", sections.map((sec, ki) => node(`${code}-${ci + 1}-${ki + 1}`, sec, "l3")).join(""))).join(""));
   h += node("_none", "미분류", "l1");
+  if (canEdit() && state.problems.size) h += `<p class="drag-hint">문항 카드를 중단원이나 미분류로 끌어다 놓으면 그 단원으로 옮겨집니다.</p>`;
   const tree = $("#tree");
   tree.innerHTML = h;
   tree.querySelectorAll(".node").forEach(n => n.onclick = () => {
@@ -1759,6 +1774,26 @@ function renderTree() {
     tree.querySelectorAll(".node.sel").forEach(x => x.classList.remove("sel")); n.classList.add("sel");
     renderGrid(false);
   });
+  if (!canEdit()) return;
+  // 문항 카드를 중단원(또는 미분류)에 놓으면 그 단원으로 옮긴다. 접힌 과목·대단원 위에 잠시 머물면 펼쳐진다
+  let hoverTimer = 0;
+  const isProblem = e => [...e.dataTransfer.types].includes("text/x-problem");
+  tree.querySelectorAll(".node").forEach(n => {
+    const k = n.dataset.k, target = k === "_none" || !!UNITS[k];
+    n.ondragenter = e => {
+      if (!isProblem(e)) return;
+      clearTimeout(hoverTimer);
+      if (n.getAttribute("aria-expanded") === "false") hoverTimer = setTimeout(() => n.isConnected && n.getAttribute("aria-expanded") === "false" && (state.open.add(k), n.setAttribute("aria-expanded", true), n.nextElementSibling.classList.add("open")), 500);
+    };
+    if (!target) return;
+    n.ondragover = e => { if (!isProblem(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; n.classList.add("drop-ok"); };
+    n.ondragleave = () => n.classList.remove("drop-ok");
+    n.ondrop = async e => {
+      e.preventDefault(); n.classList.remove("drop-ok"); clearTimeout(hoverTimer);
+      const id = e.dataTransfer.getData("text/x-problem"); if (!id) return;
+      await moveProblems([id], k === "_none" ? "" : k); renderGrid();
+    };
+  });
 }
 function renderGrid(withTree = true) {
   if (withTree) renderTree();
@@ -1771,6 +1806,11 @@ function renderGrid(withTree = true) {
   $("#grid").innerHTML = ps.length ? ps.map(p => cardHTML(p)).join("")
     : `<div class="empty-state">${state.problems.size ? "조건에 맞는 문항이 없습니다." : "아직 문항이 없습니다. ① PDF 넣기에서 모의고사를 추가하세요."}</div>`;
   bindCards($("#grid"), ps.map(p => p.id));
+  if (canEdit()) $("#grid").querySelectorAll(".card").forEach(card => {
+    card.draggable = true;
+    card.ondragstart = e => { e.dataTransfer.setData("text/x-problem", card.dataset.id); e.dataTransfer.effectAllowed = "move"; card.classList.add("dragging"); };
+    card.ondragend = () => card.classList.remove("dragging");
+  });
 }
 async function runBatch(ids, fn, label) {
   const st = $("#t-status");
@@ -1938,18 +1978,73 @@ $("#t-csv").onclick = async () => {
 /* =====================================================================
    화면: 문항 상세 (정답·풀이 / 분석 / 유사·연계 문제)
    ===================================================================== */
-function unitSelectHTML(selected) {
-  let h = `<option value="">(미분류)</option>`;
-  for (const [code, subject, chapters] of TREE) {
-    h += `<optgroup label="${esc(subject)}">`;
-    chapters.forEach(([chapter, sections], ci) => sections.forEach((s, ki) => {
-      const id = `${code}-${ci + 1}-${ki + 1}`;
-      h += `<option value="${id}" ${id === selected ? "selected" : ""}>${esc(chapter)} › ${esc(s)}</option>`;
-    }));
-    h += `</optgroup>`;
-  }
-  return h;
+/* ---------- 단원 옮기기: 학년·과목 → 영역(대단원) → 중단원 순서로 고른다 ---------- */
+const chapOptions = (code, ci) => {
+  const t = TREE.find(x => x[0] === code);
+  return `<option value="">영역(대단원)</option>` + (t ? t[2].map(([ch], i) => `<option value="${i + 1}" ${String(i + 1) === String(ci) ? "selected" : ""}>${esc(ch)}</option>`).join("") : "");
+};
+const secOptions = (code, ci, sel) => {
+  const ch = TREE.find(x => x[0] === code)?.[2][ci - 1];
+  return `<option value="">중단원</option>` + (ch ? ch[1].map((sec, k) => {
+    const id = `${code}-${ci}-${k + 1}`; return `<option value="${id}" ${id === sel ? "selected" : ""}>${esc(sec)}</option>`;
+  }).join("") : "");
+};
+function unitPickerHTML(selected, disabled = false) {
+  const [code, ci] = (selected || "").split("-"), dis = disabled ? "disabled" : "";
+  return `<div class="unit-pick">
+    <select class="up-subj" aria-label="학년·과목" ${dis}><option value="">학년·과목</option>${TREE.map(([c, subj]) => `<option value="${c}" ${c === code ? "selected" : ""}>${esc(subj)}</option>`).join("")}</select>
+    <select class="up-chap" aria-label="영역(대단원)" ${dis}>${chapOptions(code, ci)}</select>
+    <select class="up-sec" aria-label="중단원" ${dis}>${secOptions(code, ci, selected)}</select></div>`;
 }
+// 고르는 칸을 연결한다. 중단원까지 골라야 onChange 에 단원 코드가 넘어간다 (중단원이 하나뿐이면 자동으로 고른다)
+function wireUnitPicker(root, onChange) {
+  const [subj, chap, sec] = [".up-subj", ".up-chap", ".up-sec"].map(x => root.querySelector(x));
+  const fillSec = () => {
+    sec.innerHTML = secOptions(subj.value, chap.value);
+    if (sec.options.length === 2) sec.selectedIndex = 1;
+    onChange(sec.value);
+  };
+  subj.onchange = () => {
+    chap.innerHTML = chapOptions(subj.value, "");
+    if (chap.options.length === 2) chap.selectedIndex = 1;
+    fillSec();
+  };
+  chap.onchange = fillSec;
+  sec.onchange = () => onChange(sec.value);
+  return () => sec.value;
+}
+async function moveProblems(ids, unitId) {
+  let n = 0;
+  for (const id of ids) {
+    const p = state.problems.get(id);
+    if (p && p.unitId !== (unitId || null)) { await saveProblem({...p, unitId: unitId || null, unitManual: !!unitId}); n++; }
+  }
+  toast(n ? `${n}문항을 ${unitId ? UNITS[unitId].label : "미분류"}(으)로 옮겼습니다` : "이미 그 단원에 있습니다");
+  return n;
+}
+// 여러 문항을 한 번에 옮기는 창. 옮겼으면 true
+function askMove(ids) {
+  return new Promise(res => {
+    const d = $("#move"), first = state.problems.get(ids[0]);
+    const same = ids.every(id => state.problems.get(id)?.unitId === first?.unitId);
+    $("#move-msg").innerHTML = `<b>${ids.length}문항</b>을 옮길 단원을 고르세요.` +
+      (same && first?.unitId ? `<br><span class="unit-now">지금 단원: ${esc(UNITS[first.unitId]?.label || "")}</span>` : "");
+    $("#move-pick").innerHTML = unitPickerHTML(same ? first?.unitId : "");
+    const ok = $("#move-ok");
+    const get = wireUnitPicker($("#move-pick"), v => ok.disabled = !v);
+    ok.disabled = !get();
+    const done = async v => { d.close(); if (v === undefined) return res(false); await moveProblems(ids, v); res(true); };
+    ok.onclick = () => done(get());
+    $("#move-none").onclick = () => done("");
+    $("#move-cancel").onclick = () => done(undefined);
+    d.oncancel = () => res(false);
+    d.showModal();
+  });
+}
+$("#t-move").onclick = async () => {
+  const ids = selectedIds(); if (!ids.length) { $("#t-status").textContent = "먼저 표에서 문항을 선택하세요."; return; }
+  if (await askMove(ids)) renderTable();
+};
 const detailState = {id: null, list: [], tab: "answer", solSource: "solve"};
 function openDetail(id, list) {
   if (list) detailState.list = list;
@@ -2035,8 +2130,11 @@ function answerTabHTML(p) {
 function analysisTabHTML(p) {
   const c = p.classification;
   return `
-    <div class="row"><label for="d-unit">단원</label><select id="d-unit" class="unit" style="flex:1;min-width:0" ${canEdit() ? "" : "disabled"}>${unitSelectHTML(p.unitId)}</select>
-      ${p.unitManual ? `<span class="chip">직접 지정</span>` : ""}</div>
+    <div class="unit-box" style="display:grid;gap:6px">
+      <div class="row"><b>단원</b><span class="unit-now">${p.unitId ? esc(UNITS[p.unitId]?.label || "") : "미분류"}</span>${p.unitManual ? `<span class="chip">직접 지정</span>` : ""}</div>
+      ${unitPickerHTML(p.unitId, !canEdit())}
+      ${canEdit() ? `<div class="row"><button class="btn sm primary move-unit" disabled>이 단원으로 옮기기</button>${p.unitId ? `<button class="btn sm ghost unclass">미분류로 되돌리기</button>` : ""}</div>` : ""}
+    </div>
     ${c ? `
       <dl class="kv">
         <dt>유형</dt><dd>${esc(c.question_type)}</dd>
@@ -2106,7 +2204,11 @@ function bindDetail(p) {
     await saveProblem({...cur(), officialAnswer: normalizeAnswer(now) === v ? "" : v}); renderDetail();
   });
   if (q(".official")) q(".official").onchange = async e => { await saveProblem({...cur(), officialAnswer: e.target.value.trim()}); renderDetail(); };
-  if (q(".unit")) q(".unit").onchange = async e => { await saveProblem({...cur(), unitId: e.target.value || null, unitManual: true}); renderDetail(); };
+  if (q(".move-unit")) {
+    const btn = q(".move-unit"), get = wireUnitPicker(q(".unit-pick"), v => btn.disabled = !v || v === cur().unitId);
+    btn.onclick = async () => { await moveProblems([cur().id], get()); renderDetail(); };
+  }
+  if (q(".unclass")) q(".unclass").onclick = async () => { await moveProblems([cur().id], ""); renderDetail(); };
   if (q(".save-img")) q(".save-img").onclick = async () => saveFile(`${safeFile(p.examTitle)}_${pad2(p.number)}번.png`, await problemBlob(cur()));
   if (q(".del-p")) q(".del-p").onclick = async () => {
     if (!(await askConfirm(`${p.number}번 문항을 삭제할까요?`, "삭제"))) return;

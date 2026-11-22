@@ -198,6 +198,13 @@ const sse = obj => {
   await page.screenshot({path: `${OUT}/${MODE}-3-answer.png`});
   await page.locator("#detail .seg button[data-t=analysis]").click(); await page.waitForTimeout(200);
   await page.screenshot({path: `${OUT}/${MODE}-4-analysis.png`});
+  // 문항 하나의 단원 옮기기: 학년·과목 → 영역 → 중단원
+  const curId = await page.evaluate(() => document.querySelector("#detail").dataset.id || null);
+  await page.selectOption("#detail .up-subj", "MS2"); await page.selectOption("#detail .up-chap", "3"); await page.selectOption("#detail .up-sec", "MS2-3-3");
+  await page.click("#detail .move-unit"); await page.waitForTimeout(300);
+  const moved1 = await page.evaluate(() => [...state.problems.values()].filter(p => p.unitManual).map(p => p.unitId));
+  console.log("move one:", JSON.stringify(moved1));
+  if (moved1.join() !== "MS2-3-3") fails.push("문항 단원 옮기기: " + moved1);
   await page.locator("#detail .seg button[data-t=gen]").click();
   await page.click("#detail .do-gen");
   await page.waitForFunction(() => document.querySelectorAll("#detail .gen").length > 0, null, {timeout: 20000});
@@ -217,6 +224,32 @@ const sse = obj => {
   await page.waitForFunction(() => /문제 만들기 완료/.test(document.querySelector("#t-status").textContent), null, {timeout: 30000});
   console.log("bulk:", await page.textContent("#t-status"));
   await page.screenshot({path: `${OUT}/${MODE}-6-table.png`});
+  // 선택 문항 한꺼번에 옮기기
+  await page.click("#t-move");
+  await page.selectOption("#move .up-subj", "CM2"); await page.selectOption("#move .up-chap", "1"); await page.selectOption("#move .up-sec", "CM2-1-3");
+  await page.screenshot({path: `${OUT}/${MODE}-6b-move.png`});
+  await page.click("#move-ok"); await page.waitForTimeout(400);
+  const moved2 = await page.evaluate(() => [...new Set([...state.problems.values()].map(p => p.unitId))]);
+  console.log("move all:", JSON.stringify(moved2), "rows:", await page.locator("#sheet tbody tr[data-id]").count());
+  if (moved2.join() !== "CM2-1-3") fails.push("선택 문항 단원 옮기기: " + moved2);
+  // 저장소에서 카드를 단원 트리로 끌어다 놓기
+  await page.click("nav.tabs button[data-tab=library]");
+  await page.evaluate(() => { state.open.add("CM1"); state.open.add("CM1-1"); renderGrid(); });
+  await page.waitForTimeout(300);
+  const dragId = await page.locator("#grid .card").first().getAttribute("data-id");
+  await page.locator("#grid .card").first().dragTo(page.locator('#tree .node[data-k="CM1-1-2"]'));
+  await page.waitForTimeout(400);
+  const moved3 = await page.evaluate(id => state.problems.get(id).unitId, dragId);
+  console.log("drag:", moved3, "tree count:", (await page.locator('#tree .node[data-k="CM1-1-2"] .n').textContent()).trim());
+  await page.screenshot({path: `${OUT}/${MODE}-6c-drag.png`});
+  if (moved3 !== "CM1-1-2") fails.push("끌어다 놓아 옮기기: " + moved3);
+  await page.click("nav.tabs button[data-tab=table]");
+  // 직접 옮긴 단원은 다시 분류해도 유지
+  await page.click("#t-classify");
+  await page.waitForFunction(() => /분류 완료/.test(document.querySelector("#t-status").textContent), null, {timeout: 20000});
+  const kept = await page.evaluate(id => state.problems.get(id).unitId, dragId);
+  console.log("kept after reclassify:", kept);
+  if (kept !== "CM1-1-2") fails.push("다시 분류 후 직접 옮긴 단원 유지: " + kept);
   await page.click("#t-xlsx"); await page.waitForTimeout(800);
   await page.click("#btn-zip").catch(() => {});
   await page.click("nav.tabs button[data-tab=library]"); await page.click("#btn-zip"); await page.waitForTimeout(1500);
