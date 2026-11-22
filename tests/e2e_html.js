@@ -151,6 +151,10 @@ const sse = obj => {
   }
   await page.waitForFunction(() => !document.querySelector("#drop").classList.contains("disabled"), null, {timeout: 15000});
   console.log("pill:", await page.textContent("#ai-label"));
+  // 시험 이름 정렬: 글자순, 글자 속 숫자는 크기순
+  const order = await page.evaluate(() => ["2016 고1 3월", "2015 고1 11월", "나 시험", "2015 고1 3월", "가 시험", "2015 고1 9월"].sort(byName).join(" | "));
+  console.log("name order:", order);
+  if (order !== "2015 고1 3월 | 2015 고1 9월 | 2015 고1 11월 | 2016 고1 3월 | 가 시험 | 나 시험") fails.push("시험 이름 정렬: " + order);
   await page.click("nav.tabs button[data-tab=ingest]");
   await page.screenshot({path: `${OUT}/${MODE}-0-empty.png`});
   await page.check("#auto-solve");

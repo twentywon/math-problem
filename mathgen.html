@@ -1696,11 +1696,14 @@ function filteredProblems(ignoreUnit = false) {
       else if (!p.unitId || !(p.unitId === f || p.unitId.startsWith(f + "-"))) return false;
     }
     return !text || searchHay(p).includes(text);
-  }).sort((a, b) => unitOrder(a) - unitOrder(b) || str(a.examTitle).localeCompare(str(b.examTitle)) || a.order - b.order);
+  }).sort((a, b) => unitOrder(a) - unitOrder(b) || byName(a.examTitle, b.examTitle) || a.order - b.order);
 }
+// 이름 정렬: 글자는 가나다·ABC 순, 글자 속 숫자는 크기 순 ("3월" < "11월", "2015" < "2016")
+const NAME_SORT = new Intl.Collator("ko", {numeric: true, sensitivity: "base"});
+const byName = (a, b) => NAME_SORT.compare(str(a), str(b));
 function examOptions(sel) {
   const cur = sel.value;
-  sel.innerHTML = `<option value="">모든 시험</option>` + [...state.exams.values()].sort((a, b) => str(b.addedAt).localeCompare(str(a.addedAt)))
+  sel.innerHTML = `<option value="">모든 시험</option>` + [...state.exams.values()].sort((a, b) => byName(a.title, b.title) || str(a.addedAt).localeCompare(str(b.addedAt)))
     .map(e => `<option value="${esc(e.id)}">${esc(e.title)}</option>`).join("");
   sel.value = state.exams.has(cur) ? cur : "";
 }
@@ -1797,10 +1800,10 @@ function tableRows() {
   rows.sort((a, b) => {
     if (col) {
       const x = col.v(a), y = col.v(b);
-      const r = col.num ? (Number(x) || 0) - (Number(y) || 0) : String(x).localeCompare(String(y), "ko");
+      const r = col.num ? (Number(x) || 0) - (Number(y) || 0) : byName(x, y);
       if (r) return r * dir;
     }
-    return str(a.examTitle).localeCompare(str(b.examTitle)) || a.order - b.order;
+    return byName(a.examTitle, b.examTitle) || a.order - b.order;
   });
   return rows;
 }
