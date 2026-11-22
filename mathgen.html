@@ -6,6 +6,7 @@
 <title>모의고사 문제 도우미</title>
 <!--
   모의고사 문제 도우미 — 이 파일 하나가 프로그램 전체입니다 (빌드 단계 없음, 이 파일을 직접 고칩니다).
+  claude.ai 아티팩트 버전은 node tools/build-artifact.js 가 이 파일의 PLATFORM 부분만 artifact/platform.js 로 바꿔 만듭니다.
   구성: <style> 화면 디자인 · <body> 화면 뼈대 · <script> 앞부분 PLATFORM(AI 제공자 설정·API 호출, 브라우저 저장, 파일 저장, 폴더 감시)
         · 뒷부분 공통 기능(PDF 자르기, 단원 분류·풀이, 상대 난이도, 문제 생성·검산, 문항 표, 내보내기)
 -->
@@ -349,6 +350,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 <div id="toast" hidden role="status"></div>
 
 <script>
+/* [PLATFORM 시작] tools/build-artifact.js 가 이 표시부터 [PLATFORM 끝] 까지를 artifact/platform.js 로 바꿔 아티팩트를 만든다 */
 "use strict";
 /* =====================================================================
    다운로드(단일 HTML) 버전의 플랫폼 부분
@@ -654,12 +656,13 @@ const PLATFORM = (() => {
     settings: {label: "설정", render: renderSettingsForm},
   };
 })();
+/* [PLATFORM 끝] */
 
 "use strict";
 /* =====================================================================
    모의고사 문제 도우미 — 공통 코드
    플랫폼별 부분(AI 호출, 저장소, 파일 저장, 설정 화면)은 PLATFORM 객체가 맡는다.
-   (src/platform.standalone.js: API 키로 직접 호출 / src/platform.artifact.js: claude.ai 아티팩트)
+   (mathgen.html: API 키로 직접 호출 / artifact/platform.js: claude.ai 아티팩트)
    ===================================================================== */
 
 /* ---------- 2022 개정 교육과정 단원표 ---------- */

@@ -1,14 +1,15 @@
-// mathgen.html 브라우저 통합 테스트 (Playwright). CDN 은 로컬 npm 패키지로, AI 는 가짜 응답으로 대체한다.
+// 브라우저 통합 테스트 (Playwright). CDN 은 로컬 npm 패키지로, AI 는 가짜 응답으로 대체한다.
 //
-//   node tests/e2e_html.js <libs> <mathgen.html 절대경로> <tests/fixtures/group.pdf 절대경로> <출력 폴더>
+//   node tests/e2e_html.js html     <libs> <mathgen.html 절대경로> <tests/fixtures/group.pdf> <출력 폴더>
+//   node tests/e2e_html.js artifact   <libs> <아티팩트 폴더(node tools/build-artifact.js 결과)> <tests/fixtures/group.pdf> <출력 폴더>
 // 같은 폴더의 first.pdf, sample.pdf 도 쓴다. 확인이 하나라도 실패하면 종료 코드 1.
 //
 // <libs>: npm pack 으로 받아 푼 katex(package/), pdfjs(pdfjs/package/), jszip(jszip/package/), xlsx(xlsx/package/) 가 있는 폴더
 const { chromium } = require("playwright");
 const fs = require("fs");
+const http = require("http");
 const path = require("path");
-const [K, TARGET, PDF, OUT] = process.argv.slice(2);
-const MODE = "html"; // 스크린샷 파일 이름 앞부분
+const [MODE, K, TARGET, PDF, OUT] = process.argv.slice(2);
 
 function local(url) {
   if (url.includes("katex@0.16.11/")) return `${K}/package/${url.split("katex@0.16.11/")[1]}`;
@@ -84,7 +85,39 @@ const sse = obj => {
       body: JSON.stringify({candidates: [{content: {parts: [{text: "```json\n" + JSON.stringify(answerFor(prompt)) + "\n```"}]}, finishReason: "STOP"}]})});
   });
 
-  const url = "file://" + TARGET;
+  let url = "file://" + TARGET, server = null;
+  if (MODE === "artifact") {
+    // 아티팩트 뼈대를 씌워 로컬 서버로 띄우고, window.claude 를 흉내 낸다
+    server = http.createServer((req, res) => {
+      const p = decodeURIComponent(req.url.split("?")[0]);
+      if (p === "/" || p === "/index.html") {
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        return res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head><body>${fs.readFileSync(path.join(TARGET, "mathgen-artifact.html"), "utf8")}</body></html>`);
+      }
+      const f = path.join(TARGET, p);
+      if (fs.existsSync(f)) return res.end(fs.readFileSync(f));
+      res.statusCode = 404; res.end();
+    }).listen(8799);
+    url = "http://localhost:8799/";
+    // 아티팩트 저장소의 이미지 주소(_blob)는 1×1 PNG 로 응답한다
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==", "base64");
+    await ctx.route("**/_blob/**", r => r.fulfill({body: png, contentType: "image/png"}));
+    await ctx.exposeBinding("__answerFor", (_, prompt) => answerFor(prompt));
+    await ctx.addInitScript(() => {
+      const docs = {exams: new Map(), problems: new Map()}, subs = {exams: [], problems: []};
+      const snap = c => ({docs: [...docs[c].entries()].map(([id, v]) => ({id, exists: true, data: () => JSON.parse(JSON.stringify(v)), metadata: {fromCache: false}})), metadata: {fromCache: false, hasPendingWrites: false}});
+      const fire = c => setTimeout(() => subs[c].forEach(f => f(snap(c))), 5);
+      const db = {collection: c => ({onSnapshot: n => { subs[c].push(n); fire(c); return () => {}; }, doc: id => ({set: async v => { docs[c].set(id, v); fire(c); }, delete: async () => { docs[c].delete(id); fire(c); }})})};
+      const assets = {upload: async blob => ({id: "a" + Math.random().toString(16).slice(2), url: URL.createObjectURL(blob), sizeBytes: blob.size, contentType: blob.type}), delete: async () => {}};
+      window.__calls = []; window.__saved = [];
+      const sample = async () => ({text: ""});
+      sample.limits = async () => ({maxPromptBytes: 262144, images: {maxCount: 5, maxInputBytes: 2e7, mediaTypes: ["image/png", "image/jpeg"]}, modelTiers: ["default", "complex", "quick"]});
+      sample.json = async (prompt, opts) => { window.__calls.push({imgs: (opts.images || []).length, tier: opts.modelTier, cache: opts.cache}); return window.__answerFor(prompt); };
+      const downloads = {save: async ({filename, data}) => { window.__saved.push([filename, data.size || data.length]); return {status: "saved"}; }};
+      const map = {sample, db, assets, downloads};
+      window.claude = {use: async n => map[n] || null};
+    });
+  }
 
   const page = await ctx.newPage();
   page.on("pageerror", e => errors.push("pageerror: " + e.message));
@@ -111,9 +144,11 @@ const sse = obj => {
   const saved = [];
   page.on("download", async d => { saved.push(d.suggestedFilename()); await d.saveAs(path.join(OUT, d.suggestedFilename())); });
 
-  await page.click("nav.tabs button[data-tab=settings]");
-  await page.selectOption("#s-provider", "anthropic");
-  await page.fill("#s-key", "sk-ant-test"); await page.click("#s-save");
+  if (MODE === "html") {
+    await page.click("nav.tabs button[data-tab=settings]");
+    await page.selectOption("#s-provider", "anthropic");
+    await page.fill("#s-key", "sk-ant-test"); await page.click("#s-save");
+  }
   await page.waitForFunction(() => !document.querySelector("#drop").classList.contains("disabled"), null, {timeout: 15000});
   console.log("pill:", await page.textContent("#ai-label"));
   await page.click("nav.tabs button[data-tab=ingest]");
@@ -181,7 +216,7 @@ const sse = obj => {
   console.log("analysis:", (await page.locator("#detail .kv dd").nth(1).textContent()).replace(/\s+/g, " ").trim());
   await page.screenshot({path: `${OUT}/${MODE}-9-difficulty.png`}); await page.click("#detail .close");
 
-  {
+  if (MODE === "html") {
     await page.click("nav.tabs button[data-tab=settings]");
     await page.selectOption("#s-provider", "openai"); await page.fill("#s-key", "sk-openai-test");
     await page.click("#s-list"); await page.waitForFunction(() => /불러왔습니다|못했/.test(document.querySelector("#s-msg").textContent));
@@ -198,6 +233,9 @@ const sse = obj => {
     await page.reload(); await page.click("nav.tabs button[data-tab=library]"); await page.waitForTimeout(400);
     console.log("after reload:", await page.textContent("#lib-status"));
     console.log("downloads:", saved.join(", "));
+  } else {
+    console.log("sample calls:", JSON.stringify(await page.evaluate(() => window.__calls.map(c => `${c.imgs}/${c.tier}${c.cache === false ? "/fresh" : ""}`))));
+    console.log("saved:", JSON.stringify(await page.evaluate(() => window.__saved.map(s => s[0]))));
   }
   await page.setViewportSize({width: 400, height: 820});
   await page.click("nav.tabs button[data-tab=library]");
@@ -210,6 +248,6 @@ const sse = obj => {
   await page.screenshot({path: `${OUT}/${MODE}-8-dark.png`});
   console.log("errors:", errors.length ? errors : "none");
   if (errors.length) fails.push("페이지 오류 " + errors.length + "건");
-  await b.close();
+  await b.close(); if (server) server.close();
   if (fails.length) { console.log("FAILED:", fails); process.exitCode = 1; }
 })();

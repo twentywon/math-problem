@@ -8,6 +8,8 @@
 
 프로그램은 `mathgen.html` 파일 하나입니다. 설치할 것 없이 크롬이나 엣지에서 파일을 더블클릭해 엽니다.
 
+같은 프로그램을 **claude.ai 아티팩트**로도 씁니다. 아티팩트에서는 API 키 없이 페이지를 연 사람의 Claude 계정으로 AI 를 쓰고, 문항은 아티팩트 저장소에 저장됩니다. 아티팩트는 `mathgen.html` 로 만들므로 기능과 화면이 같습니다([아티팩트 만들기](#아티팩트-만들기)).
+
 ## 사용법
 
 1. **설정** 탭에서 AI 제공자를 고르고 API 키와 모델을 넣은 뒤 **연결 테스트**를 누릅니다.
@@ -81,7 +83,7 @@
 
 ## 코드 구조
 
-빌드 단계 없이 `mathgen.html` 하나를 직접 고칩니다.
+빌드 단계 없이 `mathgen.html` 을 직접 고칩니다. 아티팩트만 아래처럼 만들어 게시합니다.
 
 | 부분 | 내용 |
 |---|---|
@@ -89,10 +91,22 @@
 | `<body>` | 탭, 패널, 대화 상자 뼈대 |
 | `<script>` 앞부분 `PLATFORM` | AI 제공자 설정과 API 호출(Claude·OpenAI·Gemini·호환 서버), 브라우저 저장(IndexedDB), 파일 저장, 폴더 감시 |
 | `<script>` 뒷부분 | PDF 자르기, 단원 분류·풀이, 상대 난이도, 문제 생성·검산, 문제 저장소·문항 표, 내보내기·가져오기 |
+| `artifact/platform.js` | 아티팩트용 `PLATFORM`: AI 는 페이지를 연 사람의 Claude 계정, 저장은 아티팩트 저장소(문항 정보는 db, 이미지는 assets), 파일 저장은 downloads |
+| `tools/build-artifact.js` | `mathgen.html` 의 `[PLATFORM 시작]`~`[PLATFORM 끝]` 부분을 `artifact/platform.js` 로 바꾸고 KaTeX 글꼴을 페이지에 넣어 아티팩트를 만드는 Node 스크립트 |
+
+### 아티팩트 만들기
+
+`mathgen.html` 을 고친 뒤 아래를 실행하면 출력 폴더에 `mathgen-artifact.html`, `pdf.worker.min.js`, `cmaps.json` 이 생깁니다. 세 파일을 함께 같은 아티팩트 주소로 다시 게시하면 반영됩니다. Node 만 있으면 되고 따로 설치할 패키지는 없습니다.
+
+```bash
+node tools/build-artifact.js <출력 폴더> <katex 패키지 폴더> <pdfjs-dist 패키지 폴더>
+```
+
+패키지 폴더는 `npm pack katex@0.16.11 pdfjs-dist@3.11.174` 로 받아 `tar -xzf` 로 푼 `package/` 폴더입니다.
 
 ## 테스트
 
-Playwright 로 `mathgen.html` 을 브라우저에서 테스트합니다(`tests/e2e_html.js`). AI 응답은 가짜로 대체합니다.
+Playwright 로 `mathgen.html` 과 아티팩트 버전을 브라우저에서 테스트합니다(`tests/e2e_html.js`). AI 응답과 아티팩트 저장소는 가짜로 대체합니다.
 
 - 자르기 회귀 확인: `tests/fixtures/` 의 합성 시험지 PDF 세 개
   - `first.pdf`: 큰 제목이 가운데를 가로지르는 1쪽, 쪽 번호 상자, 글자보다 넓은 조건 상자
@@ -101,7 +115,11 @@ Playwright 로 `mathgen.html` 을 브라우저에서 테스트합니다(`tests/e
 - 전체 흐름: 공통 자료 자르기, 분류·교차 풀이, 정답 채점, 문제 생성·검산, 문항 표·엑셀 저장, 같은 시험지 교체·이어받기, 상대 난이도, Claude·OpenAI·Gemini 제공자 전환
 
 ```bash
-node tests/e2e_html.js <libs> "$PWD/mathgen.html" "$PWD/tests/fixtures/group.pdf" <출력 폴더>
+node tests/e2e_html.js html <libs> "$PWD/mathgen.html" "$PWD/tests/fixtures/group.pdf" <출력 폴더>
+```
+
+```bash
+node tests/e2e_html.js artifact <libs> <아티팩트 출력 폴더> "$PWD/tests/fixtures/group.pdf" <출력 폴더>
 ```
 
 `<libs>` 는 `npm pack katex@0.16.11 pdfjs-dist@3.11.174 jszip@3.10.1 xlsx@0.18.5` 로 받아 푼 katex(`package/`), pdfjs(`pdfjs/package/`), jszip(`jszip/package/`), xlsx(`xlsx/package/`) 가 있는 폴더입니다. 확인이 하나라도 실패하면 종료 코드 1 로 끝납니다.
