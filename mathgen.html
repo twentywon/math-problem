@@ -219,6 +219,8 @@ dialog#detail{overflow:hidden}
 .make-grid .mf{display:grid;gap:4px;font-size:14px;min-width:0}
 @media (max-width:800px){.make-grid{grid-template-columns:1fr 1fr}.make-grid .mf:first-child{grid-column:1/-1}}
 #mk-results{display:grid;gap:12px}
+.gen.fresh{border-color:var(--omr);box-shadow:0 0 0 1px var(--omr) inset}
+.gen h4 small{font-weight:400;font-size:12px;margin-left:6px}
 .gen-img{max-width:100%;border:1px solid var(--rule);border-radius:6px;cursor:zoom-in;background:#fff}
 .p-fig.small svg{width:min(100%,320px);height:auto;background:#fff;border-radius:6px}
 /* 시험지 모양 (이미지로 만들 때). 화면 밖에서 그리므로 밝은·어두운 화면과 상관없이 흰 종이 */
@@ -390,12 +392,24 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
       </div>
       <textarea id="mk-extra" rows="2" placeholder="추가 요청 (예: 실생활 상황으로, 그래프 해석 문제 위주로, 계산은 간단하게)" aria-label="추가 요청"></textarea>
       <div class="row"><label><input type="checkbox" id="mk-verify" checked> 따로 다시 풀어 검산</label>
-        <label for="mk-target">저장할 출처</label><input id="mk-target" type="text" value="AI 생성 문제" style="min-width:160px">
         <span class="spacer"></span><button class="btn primary" id="mk-go">문제 만들기</button></div>
-      <p class="muted" id="mk-note" style="margin:0">저장소에 있는 실제 문항(같은 단원 → 같은 과목 → 전체 순)의 문장 투·조건 제시 방식·선택지와 &lt;보기&gt; 구성·배점 같은 형식과 유형을 참고하고, 난이도도 그 문항들 기준으로 맞춥니다. 저장된 문항과 너무 비슷하게 나온 문제는 버리고 다시 만듭니다. 만든 문제는 시험지 모양 이미지로 저장소에도 저장되어, 분류된 문항처럼 단원별로 보고 표·엑셀로 내보낼 수 있습니다.</p>
+      <p class="muted" id="mk-note" style="margin:0">저장소에 있는 실제 문항(같은 단원 → 같은 과목 → 전체 순)의 문장 투·조건 제시 방식·선택지와 &lt;보기&gt; 구성·배점 같은 형식과 유형을 참고하고, 난이도도 그 문항들 기준으로 맞춥니다. 저장된 문항과 너무 비슷하게 나온 문제는 버리고 다시 만듭니다. 만든 문제는 문제 저장소와 따로 아래 <b>만든 문제 보관함</b>에 저장됩니다.</p>
       <div class="muted" id="mk-status" role="status"></div>
     </div>
+    <div class="panel">
+      <div class="row"><h2 style="font-size:18px">만든 문제 보관함</h2><span class="muted" id="mb-count"></span><span class="spacer"></span>
+        <button class="btn sm" id="mb-zip">보이는 문제 이미지 저장 (ZIP)</button><button class="btn sm" id="mb-xlsx">엑셀 저장</button>
+        <button class="btn sm danger" id="mb-del-shown">보이는 문제 삭제</button></div>
+      <div class="row" style="margin-top:10px">
+        <input id="mb-q" type="text" placeholder="검색 (문제, 제목, 단원)" style="flex:1;min-width:160px" aria-label="보관함 검색">
+        <select id="mb-subj" aria-label="과목"><option value="">모든 과목</option></select>
+        <select id="mb-diff" aria-label="난이도"><option value="">모든 난이도</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+        <select id="mb-from" aria-label="만든 곳"><option value="">모든 만든 문제</option><option value="make">④ 문제 만들기에서</option><option value="derived">원본 문항에서 (유사·변형·연계)</option></select>
+      </div>
+      <p class="muted" style="margin:8px 0 0">AI 가 만든 문제는 문제 저장소·문항 표와 섞이지 않고 여기에만 모입니다. 원본 문항의 상세 창에서 만든 유사·변형·연계 문제도 함께 보입니다.</p>
+    </div>
     <div id="mk-results"></div>
+    <div class="row" id="mb-more-row" hidden><button class="btn" id="mb-more">더 보기</button></div>
   </section>
 
   <!-- 설정 / 정보 -->
@@ -615,12 +629,13 @@ const PLATFORM = (() => {
     async start(onChange) {
       try {
         dbh = await new Promise((res, rej) => {
-          const r = indexedDB.open("mathgen", 1);
-          r.onupgradeneeded = () => { r.result.createObjectStore("exams", {keyPath: "id"}); r.result.createObjectStore("problems", {keyPath: "id"}); };
+          const r = indexedDB.open("mathgen", 2); // 2판: 만든 문제 보관함(made) 추가
+          r.onupgradeneeded = () => { for (const n of ["exams", "problems", "made"]) if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, {keyPath: "id"}); };
           r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
         });
         for (const e of await req(os("exams", "readonly").getAll())) state.exams.set(e.id, e);
         for (const p of await req(os("problems", "readonly").getAll())) state.problems.set(p.id, upgradeProblem(p));
+        for (const m of await req(os("made", "readonly").getAll())) state.made.set(m.id, m);
       } catch (e) { dbh = null; toast("브라우저 저장소를 열 수 없어 이번에만 임시로 저장합니다. 시크릿 창이 아닌 일반 창에서 여세요."); }
       loaded = true; onChange();
     },
@@ -632,6 +647,8 @@ const PLATFORM = (() => {
       for (const p of [...state.problems.values()].filter(p => p.examId === id)) await this.deleteProblem(p);
       state.exams.delete(id); if (dbh) await req(os("exams", "readwrite").delete(id)).catch(() => {});
     },
+    async putMade(m) { state.made.set(m.id, m); if (dbh) await req(os("made", "readwrite").put(m)).catch(() => {}); },
+    async deleteMade(id) { state.made.delete(id); if (dbh) await req(os("made", "readwrite").delete(id)).catch(() => {}); },
   };
 
   /* ---------- 설정 화면 ---------- */
@@ -815,7 +832,7 @@ async function saveFile(name, data) {
 }
 
 /* ---------- 상태 ---------- */
-const state = {exams: new Map(), problems: new Map(), filter: {unit: null}, open: new Set(), sort: {key: "", dir: 1}, selected: new Set(), ready: false, rev: 0};
+const state = {exams: new Map(), problems: new Map(), made: new Map(), filter: {unit: null}, open: new Set(), sort: {key: "", dir: 1}, selected: new Set(), ready: false, rev: 0};
 const blobCache = new Map(); // 문항 id → PNG Blob
 const aiOK = () => PLATFORM.ai.ready();
 const canEdit = () => !PLATFORM.store.readOnly;
@@ -1672,6 +1689,7 @@ function updateStatus() {
 }
 function onStoreChange() {
   updateStatus(); refreshJobs(); fillImgTarget();
+  if (state.ready && [...state.exams.values()].some(e => e.kind === "generated")) migrateLegacyMade().then(n => n && onStoreChange());
   const t = currentTab();
   if (t === "library") renderGrid(); else if (t === "table") renderTable(); else if (t === "settings") renderSettings(); else if (t === "make") renderMake();
 }
@@ -2550,7 +2568,7 @@ function bindDetail(p) {
    ④ 문제 만들기: 교육과정 단원·난이도·유형·개수로 새 문제를 만들어 저장소에 넣는다
    ===================================================================== */
 const MAKE_DIFF = {1: "매우 쉬움 (개념 확인, 한두 단계)", 2: "쉬움 (기본 적용)", 3: "보통 (두세 개념 연결)", 4: "어려움 (조건 해석·여러 단계)", 5: "매우 어려움 (최고난도, 새로운 관찰 필요)"};
-const makeState = {made: [], picker: null};
+const makeState = {busy: false, fresh: new Set(), limit: 30};
 // 고른 단원 범위: 중단원 하나, 또는 영역·과목 안의 중단원들
 function makeScope() {
   const r = $("#mk-unit"), subj = r.querySelector(".up-subj").value, chap = r.querySelector(".up-chap").value, sec = r.querySelector(".up-sec").value;
@@ -2595,52 +2613,121 @@ function renderMake() {
   const ok = aiOK() && canEdit();
   $("#mk-go").disabled = !ok || makeState.busy;
   $("#mk-status").textContent = makeState.busy ? $("#mk-status").textContent : !canEdit() ? "보기 전용이라 문제를 만들 수 없습니다." : !aiOK() ? PLATFORM.ai.blockedReason() : $("#mk-status").textContent;
+  const subj = $("#mb-subj");
+  if (subj.options.length <= 1) subj.innerHTML = `<option value="">모든 과목</option>` + TREE.map(t => `<option value="${t[0]}">${esc(t[1])}</option>`).join("");
   renderMakeResults();
 }
-function renderMakeResults() {
-  const list = makeState.made.filter(x => state.problems.has(x.id));
-  makeState.made = list;
-  $("#mk-results").innerHTML = list.length ? `<div class="row"><h3 style="font-size:16px">방금 만든 문제 ${list.length}개</h3><span class="spacer"></span><button class="btn sm mk-lib">저장소에서 보기</button></div>` +
-    list.map((x, i) => genCardHTML(x.g, i)).join("") : "";
-  renderMath($("#mk-results"));
-  bindGenTools($("#mk-results"), () => makeState.made.map(x => x.g), (g, i) => `${safeFile(makeState.made[i].title)}_${pad2(state.problems.get(makeState.made[i].id)?.number || i + 1)}번`);
-  $("#mk-results").querySelectorAll(".g-del").forEach(b => b.onclick = async () => {
-    const x = makeState.made[+b.closest(".gen").dataset.i], p = state.problems.get(x?.id);
-    if (p && await askConfirm(`만든 문제 ${p.number}번을 저장소에서도 삭제할까요?`, "삭제")) { await removeProblem(p); onStoreChange(); renderMakeResults(); }
-  });
-  const lib = $("#mk-results .mk-lib");
-  if (lib) lib.onclick = () => { const ex = state.problems.get(list[0].id)?.examId; showTab("library"); $("#f-exam").value = ex || ""; state.filter.unit = null; renderGrid(); };
+// 보관함에 보이는 만든 문제: ④ 에서 만든 것(made) + 원본 문항에서 만든 것(problem.generated)
+function madeEntries() {
+  const out = [];
+  for (const m of state.made.values()) out.push({key: "m:" + m.id, g: m.g, from: "make", madeId: m.id, at: m.createdAt || m.g?.createdAt || "", origin: m.request?.scope || ""});
+  for (const p of state.problems.values()) (p.generated || []).forEach((g, i) =>
+    out.push({key: `p:${p.id}:${i}`, g, from: "derived", problemId: p.id, at: g.createdAt || "", origin: `원본: ${p.examTitle} ${p.number}번`}));
+  return out.sort((x, y) => (makeState.fresh.has(y.key) - makeState.fresh.has(x.key)) || str(y.at).localeCompare(str(x.at)));
 }
-// 만든 문제를 저장소의 문항으로: 시험지 모양 이미지 + 분류된 문항과 같은 정보
-async function saveMadeProblem(g, examId, title, no, order) {
-  const id = `${examId}-q${pad2(order)}`, blob = await paperBlob(g, no);
-  blobCache.set(id, blob);
-  const img = await PLATFORM.store.saveImage(id, blob);
-  const type = g.choices?.length ? "5지선다" : "단답형";
-  const classification = {transcription: genText(g, no), figure_description: g.figure_description, question_type: type,
-    primary_unit_id: g.unit_id, secondary_unit_ids: [], key_concepts: g.shared_concepts || [], solution_approach: g.relation_to_original || "",
-    answer: g.answer, solution_steps: g.solution_steps || [], points: 0, difficulty_score: Math.min(10, Math.max(1, (g.difficulty || 3) * 2)), by: g.by, at: g.createdAt};
-  const rec = {id, examId, examTitle: title, order, number: no, section: 0, page: 0, ...img, shared: null, made: {verification: g.verification || null, figure_svg: g.figure_svg || ""},
-    classification, unitId: g.unit_id, unitManual: false, solve: null, officialAnswer: "", generated: []};
-  await saveProblem(rec);
-  return rec;
+function shownMade() {
+  const q = $("#mb-q").value.trim().toLowerCase(), subj = $("#mb-subj").value, diff = $("#mb-diff").value, from = $("#mb-from").value;
+  return madeEntries().filter(e => {
+    if (from && e.from !== from) return false;
+    if (subj && !str(e.g.unit_id).startsWith(subj + "-")) return false;
+    if (diff && String(e.g.difficulty) !== diff) return false;
+    return !q || [e.g.title, e.g.statement, e.g.kind, UNITS[e.g.unit_id]?.label, e.origin].join(" ").toLowerCase().includes(q);
+  });
+}
+["#mb-q", "#mb-subj", "#mb-diff", "#mb-from"].forEach(id => $(id).oninput = () => { makeState.limit = 30; renderMakeResults(); });
+$("#mb-more").onclick = () => { makeState.limit += 30; renderMakeResults(); };
+async function deleteMadeEntry(e) {
+  if (e.from === "make") return PLATFORM.store.deleteMade(e.madeId);
+  const p = state.problems.get(e.problemId); if (!p) return;
+  await saveProblem({...p, generated: (p.generated || []).filter(g => g !== e.g)});
+}
+const madeFileName = (e, i) => `만든문제_${pad2(i + 1)}_${safeFile(e.g.title || "문제")}`;
+function renderMakeResults() {
+  const all = madeEntries(), list = shownMade(), shown = list.slice(0, makeState.limit);
+  $("#mb-count").textContent = `${all.length}개${list.length !== all.length ? ` 중 ${list.length}개 보임` : ""}`;
+  $("#mb-more-row").hidden = list.length <= shown.length;
+  $("#mb-del-shown").hidden = !canEdit() || !list.length;
+  $("#mb-zip").hidden = $("#mb-xlsx").hidden = !PLATFORM.canSave() || !list.length;
+  $("#mk-results").innerHTML = shown.length ? shown.map((e, i) => genCardHTML(e.g, i).replace('<article class="gen"',
+    `<article class="gen${makeState.fresh.has(e.key) ? " fresh" : ""}" data-key="${esc(e.key)}"`).replace("</h4>", ` <small class="muted">${esc(e.origin)}</small></h4>`)).join("")
+    : `<p class="muted">${all.length ? "조건에 맞는 만든 문제가 없습니다." : "아직 만든 문제가 없습니다."}</p>`;
+  renderMath($("#mk-results"));
+  bindGenTools($("#mk-results"), () => shown.map(e => e.g), (g, i) => madeFileName(shown[i], i));
+  $("#mk-results").querySelectorAll(".g-del").forEach(b => b.onclick = async () => {
+    const e = shown[+b.closest(".gen").dataset.i]; if (!e) return;
+    if (!(await askConfirm(`'${e.g.title}' 문제를 보관함에서 삭제할까요?${e.from === "derived" ? " (원본 문항의 만든 문제 목록에서도 지워집니다)" : ""}`, "삭제"))) return;
+    await deleteMadeEntry(e); renderMakeResults();
+  });
+}
+$("#mb-del-shown").onclick = async () => {
+  const list = shownMade(); if (!list.length) return;
+  if (!(await askConfirm(`보관함에서 지금 보이는 ${list.length}문제를 삭제할까요? 되돌릴 수 없습니다.`, "삭제"))) return;
+  for (const e of list) await deleteMadeEntry(e);
+  renderMakeResults(); toast(`${list.length}문제를 삭제했습니다`);
+};
+$("#mb-zip").onclick = async () => {
+  const list = shownMade(), b = $("#mb-zip"), zip = new JSZip(); if (!list.length) return;
+  b.disabled = true;
+  try {
+    for (const [i, e] of list.entries()) {
+      b.textContent = `이미지 만드는 중… ${i + 1}/${list.length}`;
+      zip.file(madeFileName(e, i) + ".png", await paperBlob(e.g, i + 1));
+      zip.file(madeFileName(e, i) + ".txt", genText(e.g, i + 1) + `\n\n[정답] ${e.g.answer}\n[풀이]\n${(e.g.solution_steps || []).map((x, k) => `${k + 1}. ${x}`).join("\n")}`);
+    }
+    await saveFile(`만든문제_${new Date().toISOString().slice(0, 10)}.zip`, await zip.generateAsync({type: "blob"}));
+  } catch (err) { toast(err.message); }
+  b.disabled = false; b.textContent = "보이는 문제 이미지 저장 (ZIP)";
+};
+$("#mb-xlsx").onclick = async () => {
+  const rows = shownMade().map((e, i) => ({"순번": i + 1, "만든 곳": e.from === "make" ? "문제 만들기" : "원본 문항", "원본": e.origin, "유형": e.g.kind, "제목": e.g.title,
+    "단원": UNITS[e.g.unit_id]?.label || "", "난이도": e.g.difficulty, "문제": e.g.statement, "선택지": (e.g.choices || []).map((c, j) => `${MARKS[j]} ${c}`).join("  "),
+    "그림 설명": e.g.figure_description, "정답": e.g.answer, "풀이": (e.g.solution_steps || []).join("\n"),
+    "검산": e.g.verification ? (e.g.verification.passed ? "통과" : "불일치") : "", "만든 때": e.at}));
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "만든 문제");
+  await saveFile(`만든문제_${new Date().toISOString().slice(0, 10)}.xlsx`, new Blob([XLSX.write(wb, {bookType: "xlsx", type: "array"})]));
+};
+// 예전 버전이 '만든 문제' 출처(kind: generated)로 문제 저장소에 넣은 문항을 보관함으로 옮긴다
+let legacyMoving = false;
+async function migrateLegacyMade() {
+  if (legacyMoving || !canEdit()) return 0;
+  const exams = [...state.exams.values()].filter(e => e.kind === "generated"); if (!exams.length) return 0;
+  legacyMoving = true; let n = 0;
+  try {
+    for (const ex of exams) {
+      for (const p of [...state.problems.values()].filter(p => p.examId === ex.id).sort((a, b) => a.order - b.order)) {
+        const c = p.classification || {};
+        const g = {kind: "새 문제", title: `${ex.title} ${p.number}번`, statement: str(c.transcription).replace(/^\s*\d+\.\s*/, ""), choices: [],
+          figure_description: c.figure_description || "", figure_svg: p.made?.figure_svg || "", answer: c.answer || "", solution_steps: c.solution_steps || [],
+          shared_concepts: c.key_concepts || [], relation_to_original: "", unit_id: p.unitId, difficulty: Math.max(1, Math.round((c.difficulty_score || 6) / 2)),
+          verification: p.made?.verification || null, createdAt: c.at || ex.addedAt};
+        await PLATFORM.store.putMade({id: newId("m"), g, createdAt: g.createdAt, request: {scope: ex.title}});
+        n++;
+      }
+      await removeExam(ex.id);
+    }
+  } finally { legacyMoving = false; }
+  if (n) toast(`예전에 만든 문제 ${n}개를 문제 저장소에서 만든 문제 보관함으로 옮겼습니다`);
+  return n;
+}
+// 만든 문제를 보관함에 저장 (문제 저장소의 문항과 따로)
+async function saveMade(g, request) {
+  const m = {id: newId("m"), g, createdAt: new Date().toISOString(), request};
+  await PLATFORM.store.putMade(m);
+  return m;
 }
 $("#mk-go").onclick = async () => {
   const scope = makeScope(); if (!scope) { $("#mk-status").textContent = "먼저 학년·과목을 고르세요."; return; }
   const n = Math.min(20, Math.max(1, Math.round(+$("#mk-count").value || 1))), diff = $("#mk-diff").value, type = $("#mk-type").value;
-  const title = $("#mk-target").value.trim() || "AI 생성 문제", extra = $("#mk-extra").value.trim(), verify = $("#mk-verify").checked;
+  const extra = $("#mk-extra").value.trim(), verify = $("#mk-verify").checked;
   makeState.busy = true; $("#mk-go").disabled = true;
   const status = t => { $("#mk-status").textContent = t; };
   try {
-    // 저장할 출처: 같은 이름의 'AI 생성' 출처가 있으면 이어서, 없으면 새로
-    let ex = [...state.exams.values()].find(e => e.kind === "generated" && e.title === title);
-    if (!ex) { ex = {id: newId("e"), title, kind: "generated", fileName: "", fileHash: "", pages: 0, addedAt: new Date().toISOString()}; await PLATFORM.store.putExam(ex); }
-    const mine = [...state.problems.values()].filter(p => p.examId === ex.id);
-    let order = Math.max(0, ...mine.map(p => p.order || 0)), no = Math.max(0, ...mine.map(p => Number(p.number) || 0));
+    makeState.fresh = new Set();
     const made = [], rejected = [], refs = styleRefs(scope, diff);
     const refImages = await Promise.all(refs.picked.slice(0, 3).map(p => problemBlob(p).catch(() => null))).then(a => a.filter(Boolean));
     // 겹침 검사 대상: 저장된 모든 문항 + 이번에 만든 문제
-    const seen = [...state.problems.values()].filter(p => p.classification?.transcription).map(p => ({text: p.classification.transcription, label: `${p.examTitle} ${p.number}번`}));
+    const seen = [...state.problems.values()].filter(p => p.classification?.transcription).map(p => ({text: p.classification.transcription, label: `${p.examTitle} ${p.number}번`}))
+      .concat(madeEntries().map(e => ({text: genText(e.g, 0), label: `보관함 '${e.g.title}'`})));
     const refText = refs.picked.length ? [
       `[참고 문항] 저장소의 실제 문항 ${refs.picked.length}개(${refs.where})다. 앞의 ${refImages.length}개는 이미지도 함께 보낸다.`,
       `이 문항들의 문장 투, 조건을 주는 방식, 선택지·<보기> 구성, 배점 표기, 그림을 쓰는 방식 같은 '형식과 유형'만 본떠라.`,
@@ -2680,19 +2767,19 @@ $("#mk-go").onclick = async () => {
       }
       if (verify) { status(`검산 중… (${batch.length}문제를 처음 보는 사람처럼 다시 풉니다)`); await verifyMade(batch); }
       for (const g of batch) {
-        status(`저장소에 저장 중… ${done + 1}/${n}`);
-        const rec = await saveMadeProblem(g, ex.id, ex.title, ++no, ++order);
-        makeState.made.push({id: rec.id, g, title: ex.title});
+        status(`보관함에 저장 중… ${done + 1}/${n}`);
+        const m = await saveMade(g, {scope: scope.label, difficulty: diff, type});
+        makeState.fresh.add("m:" + m.id);
         made.push(g); done++;
       }
       renderMakeResults();
     }
     const bad = made.filter(g => g.verification && !g.verification.passed).length;
-    if (made.length >= n) status(`${made.length}문제를 만들어 '${ex.title}' 출처에 저장했습니다${bad ? ` (검산 불일치 ${bad}개는 꼭 확인하세요)` : ""}` +
+    if (made.length >= n) status(`${made.length}문제를 만들어 만든 문제 보관함에 저장했습니다${bad ? ` (검산 불일치 ${bad}개는 꼭 확인하세요)` : ""}` +
       (rejected.length ? ` · 저장된 문항과 거의 같아 버린 문제 ${rejected.length}개 (${rejected.map(r => r.like).join(", ")})` : ""));
   } catch (e) { status("실패: " + e.message); }
   makeState.busy = false; $("#mk-go").disabled = !aiOK() || !canEdit();
-  onStoreChange();
+  renderMakeResults();
 };
 
 /* =====================================================================
@@ -2741,7 +2828,7 @@ async function exportEntries() {
     problems.push({...meta, image: await blobToDataURL(blob), unitLabel: u?.label || null});
   }
   entries.push(["index.json", JSON.stringify(problems.map(({image, ...m}) => m), null, 2)]);
-  entries.push(["backup.json", JSON.stringify({format: "mathgen-backup", version: 3, exportedAt: new Date().toISOString(), exams: [...state.exams.values()], problems})]);
+  entries.push(["backup.json", JSON.stringify({format: "mathgen-backup", version: 4, exportedAt: new Date().toISOString(), exams: [...state.exams.values()], problems, made: [...state.made.values()]})]);
   return entries;
 }
 async function buildZip() {
@@ -2765,7 +2852,8 @@ $("#import-file").onchange = async e => {
       const img = await PLATFORM.store.saveImage(p.id, blob);
       await saveProblem(upgradeProblem({...p, ...img}));
     }
-    toast(`불러왔습니다: 출처 ${data.exams.length}개, 문항 ${data.problems.length}개`);
+    for (const m of data.made || []) await PLATFORM.store.putMade(m);
+    toast(`불러왔습니다: 출처 ${data.exams.length}개, 문항 ${data.problems.length}개${data.made?.length ? `, 만든 문제 ${data.made.length}개` : ""}`);
     renderLibrary();
   } catch (err) { toast("불러오기 실패: " + err.message); }
 };
@@ -2778,7 +2866,7 @@ function renderSettings() {
   $("#store-desc").textContent = PLATFORM.store.describe();
   const ps = [...state.problems.values()];
   const gen = ps.reduce((s, p) => s + (p.generated?.length || 0), 0);
-  $("#store-stats").textContent = `출처 ${state.exams.size}개 · 문항 ${ps.length}개 (분류 ${ps.filter(p => p.unitId).length}개, 교차 풀이 ${ps.filter(p => p.solve).length}개) · 만든 문제 ${gen}개`;
+  $("#store-stats").textContent = `출처 ${state.exams.size}개 · 문항 ${ps.length}개 (분류 ${ps.filter(p => p.unitId).length}개, 교차 풀이 ${ps.filter(p => p.solve).length}개) · 만든 문제 ${gen + state.made.size}개 (원본에서 ${gen}개, 문제 만들기 보관함 ${state.made.size}개)`;
   $("#btn-wipe").hidden = !canEdit();
   const n = ps.filter(p => p.classification).length;
   $("#diff-desc").textContent = n >= 10
@@ -2790,6 +2878,7 @@ $("#btn-wipe").onclick = async () => {
   const b = $("#btn-wipe"); b.disabled = true;
   for (const id of [...state.exams.keys()]) await removeExam(id);
   for (const p of [...state.problems.values()]) await removeProblem(p);
+  for (const id of [...state.made.keys()]) await PLATFORM.store.deleteMade(id);
   b.disabled = false; $("#jobs").innerHTML = ""; jobRenderers.clear(); $("#ingest-empty").hidden = false; state.selected.clear();
   toast("모두 삭제했습니다"); onStoreChange();
 };

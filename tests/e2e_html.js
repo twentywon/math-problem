@@ -127,10 +127,11 @@ const sse = obj => {
     await ctx.route("**/_blob/**", r => r.fulfill({body: png, contentType: "image/png"}));
     await ctx.exposeBinding("__answerFor", (_, prompt) => answerFor(prompt));
     await ctx.addInitScript(() => {
-      const docs = {exams: new Map(), problems: new Map()}, subs = {exams: [], problems: []};
+      const docs = {}, subs = {};
+      const col = c => { docs[c] = docs[c] || new Map(); subs[c] = subs[c] || []; return c; };
       const snap = c => ({docs: [...docs[c].entries()].map(([id, v]) => ({id, exists: true, data: () => JSON.parse(JSON.stringify(v)), metadata: {fromCache: false}})), metadata: {fromCache: false, hasPendingWrites: false}});
       const fire = c => setTimeout(() => subs[c].forEach(f => f(snap(c))), 5);
-      const db = {collection: c => ({onSnapshot: n => { subs[c].push(n); fire(c); return () => {}; }, doc: id => ({set: async v => { docs[c].set(id, v); fire(c); }, delete: async () => { docs[c].delete(id); fire(c); }})})};
+      const db = {collection: c => (col(c), {onSnapshot: n => { subs[c].push(n); fire(c); return () => {}; }, doc: id => ({set: async v => { docs[c].set(id, v); fire(c); }, delete: async () => { docs[c].delete(id); fire(c); }})})};
       const assets = {upload: async blob => ({id: "a" + Math.random().toString(16).slice(2), url: URL.createObjectURL(blob), sizeBytes: blob.size, contentType: blob.type}), delete: async () => {}};
       window.__calls = []; window.__saved = [];
       const sample = async () => ({text: ""});
@@ -435,18 +436,19 @@ const sse = obj => {
   console.log("title:", await page.title());
   if (await page.title() !== "수학 문제 도우미") fails.push("제목");
 
-  // ④ 문제 만들기: 단원 범위(공통수학1 전체)·난이도·유형·개수
+  // ④ 문제 만들기: 단원 범위(공통수학1 전체)·난이도·유형·개수 → 문제 저장소와 따로 '만든 문제 보관함'에
+  const libBefore = await page.evaluate(() => [state.problems.size, state.exams.size]);
   await page.click("nav.tabs button[data-tab=make]");
   await page.selectOption("#mk-unit .up-subj", "CM1");
   await page.selectOption("#mk-diff", "4"); await page.selectOption("#mk-type", "5지선다");
-  await page.fill("#mk-count", "3"); await page.fill("#mk-target", "테스트 생성");
+  await page.fill("#mk-count", "3");
   await page.click("#mk-go");
   await page.waitForFunction(() => /저장했습니다|실패/.test(document.querySelector("#mk-status").textContent), null, {timeout: 60000});
+  await page.waitForTimeout(300);
   const mk = await page.evaluate(() => {
-    const ex = [...state.exams.values()].find(e => e.title === "테스트 생성");
-    const ps = ex ? [...state.problems.values()].filter(p => p.examId === ex.id).sort((a, b) => a.order - b.order) : [];
-    return {status: document.querySelector("#mk-status").textContent, kind: ex?.kind, nums: ps.map(p => p.number), units: ps.map(p => p.unitId),
-      scores: ps.map(p => p.classification?.difficulty_score), images: ps.filter(p => p.image).length, cards: document.querySelectorAll("#mk-results .gen").length};
+    const ms = [...state.made.values()];
+    return {status: document.querySelector("#mk-status").textContent, made: ms.length, units: ms.map(m => m.g.unit_id), diffs: ms.map(m => m.g.difficulty),
+      lib: [state.problems.size, state.exams.size], fresh: document.querySelectorAll("#mk-results .gen.fresh").length, count: document.querySelector("#mb-count").textContent};
   });
   console.log("make:", JSON.stringify(mk));
   const mp = makePrompts[0] || "";
@@ -454,23 +456,49 @@ const sse = obj => {
   if (!mp.includes("[참고 문항]") || !mp.includes("[저장된 문항의 형식]") || !mp.includes("그대로 옮기거나")) fails.push("문제 만들기: 저장된 문항 형식 참고");
   if (!/버린 문제 1개/.test(mk.status)) fails.push("문제 만들기: 저장된 문항과 같은 문제 버리기 " + mk.status);
   if (makePrompts.length > 1 && !makePrompts[1].includes("베낀 문제")) fails.push("문제 만들기: 버린 문제를 다음 요청에 알림");
-  if (mk.kind !== "generated" || mk.nums.join() !== "1,2,3" || !mk.units.every(u => /^CM1-/.test(u)) || !mk.scores.every(x => x === 8) || mk.images !== 3 || mk.cards !== 3)
-    fails.push("문제 만들기 탭: " + JSON.stringify(mk));
+  if (mk.made !== 3 || !mk.units.every(u => /^CM1-/.test(u)) || !mk.diffs.every(x => x === 4) || mk.lib.join() !== libBefore.join() || mk.fresh !== 3)
+    fails.push("문제 만들기 → 보관함 (저장소와 따로): " + JSON.stringify(mk));
   await page.screenshot({path: `${OUT}/${MODE}-11-make.png`, fullPage: true});
-  // 문제 저장소에서 삭제: 카드 ✕(확인 창) → 보이는 문항 삭제 → 출처 삭제
+  // 보관함: 원본 문항에서 만든 문제도 함께 보이고, 거르기·삭제가 된다
+  const box = await page.evaluate(() => [madeEntries().length, madeEntries().filter(e => e.from === "derived").length]);
+  await page.selectOption("#mb-from", "make"); await page.waitForTimeout(200);
+  const onlyMake = await page.locator("#mk-results .gen").count();
+  await page.locator("#mk-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
+  const afterBoxDel = await page.evaluate(() => state.made.size);
+  await page.selectOption("#mb-from", "");
+  console.log("box:", JSON.stringify(box), "only make:", onlyMake, "after delete:", afterBoxDel);
+  if (box[1] < 1 || box[0] !== 3 + box[1] || onlyMake !== 3 || afterBoxDel !== 2) fails.push("만든 문제 보관함");
+  // 예전 버전이 문제 저장소에 넣은 '만든 문제' 출처는 보관함으로 옮겨진다
+  const legacy = await page.evaluate(async () => {
+    await PLATFORM.store.putExam({id: "eLEGACY", title: "AI 생성 문제", kind: "generated", addedAt: "2026-11-22T00:00:00Z"});
+    await PLATFORM.store.putProblem({id: "eLEGACY-q01", examId: "eLEGACY", examTitle: "AI 생성 문제", order: 1, number: 1, section: 0, image: "", unitId: "CM1-1-1",
+      classification: {transcription: "1. 예전에 만든 문제입니다. $1+1$ 의 값은?", answer: "2", solution_steps: ["더한다."], difficulty_score: 4}, generated: []});
+    const n = await migrateLegacyMade();
+    return [n, state.exams.has("eLEGACY"), state.problems.has("eLEGACY-q01"), [...state.made.values()].some(m => /예전에 만든 문제/.test(m.g.statement))];
+  });
+  console.log("legacy move:", JSON.stringify(legacy));
+  if (legacy.join() !== "1,false,false,true") fails.push("예전 만든 문제 옮기기: " + legacy);
+  if (MODE === "html") {
+    await page.reload(); await page.waitForTimeout(800);
+    const kept = await page.evaluate(() => state.made.size);
+    console.log("box after reload:", kept);
+    if (kept !== 3) fails.push("보관함 저장 유지: " + kept);
+  }
+  // 문제 저장소에서 삭제: 카드 ✕(확인 창) → 보이는 문항 삭제 → 출처 삭제 (이미지로 넣은 출처로 확인)
   await page.click("nav.tabs button[data-tab=library]");
-  const genEx = await page.evaluate(() => [...state.exams.values()].find(e => e.title === "테스트 생성").id);
-  await page.selectOption("#f-exam", genEx); await page.waitForTimeout(300);
-  const cnt = () => page.evaluate(id => [...state.problems.values()].filter(p => p.examId === id).length, genEx);
+  const delEx = await page.evaluate(() => [...state.exams.values()].find(e => /^이미지 2장/.test(e.title)).id);
+  await page.selectOption("#f-exam", delEx); await page.waitForTimeout(300);
+  const cnt = () => page.evaluate(id => [...state.problems.values()].filter(p => p.examId === id).length, delEx);
+  const before3 = await cnt();
   await page.locator("#grid .card .x").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
   const afterOne = await cnt();
   await page.click("#btn-del-shown"); await page.click("#confirm-yes"); await page.waitForTimeout(400);
   const afterShown = await cnt();
   const delExamShown = await page.locator("#btn-del-exam").isVisible();
   await page.click("#btn-del-exam"); await page.click("#confirm-yes"); await page.waitForTimeout(400);
-  const examGone = await page.evaluate(id => !state.exams.has(id), genEx);
-  console.log("delete:", afterOne, afterShown, delExamShown, examGone);
-  if (afterOne !== 2 || afterShown !== 0 || !delExamShown || !examGone) fails.push("저장소 삭제");
+  const examGone = await page.evaluate(id => !state.exams.has(id), delEx);
+  console.log("delete:", before3, afterOne, afterShown, delExamShown, examGone);
+  if (afterOne !== before3 - 1 || afterShown !== 0 || !delExamShown || !examGone) fails.push("저장소 삭제");
 
   await page.setViewportSize({width: 400, height: 820});
   await page.click("nav.tabs button[data-tab=library]");

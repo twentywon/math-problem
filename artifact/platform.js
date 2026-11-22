@@ -59,6 +59,7 @@ const PLATFORM = (() => {
         db.collection("exams").onSnapshot(snap => {
           state.exams = new Map(snap.docs.map(d => [d.id, {...d.data(), id: d.id}])); done("exams", snap);
         }, e => { clearTimeout(timer); toast("저장소 오류: " + e.code); });
+        db.collection("made").onSnapshot(snap => { state.made = new Map(snap.docs.map(d => [d.id, {...d.data(), id: d.id}])); onChange(); }, () => {});
         db.collection("problems").onSnapshot(snap => {
           state.problems = new Map(snap.docs.map(d => { const v = upgradeProblem({...d.data(), id: d.id}); v.image = "/_blob/" + v.imageId; return [d.id, v]; }));
           done("problems", snap);
@@ -81,6 +82,8 @@ const PLATFORM = (() => {
         state.exams.delete(id);
         await queue("e/" + id, () => db.collection("exams").doc(id).delete());
       },
+      putMade(m) { state.made.set(m.id, m); return queue("m/" + m.id, () => db.collection("made").doc(m.id).set(plain(m))); },
+      async deleteMade(id) { state.made.delete(id); await queue("m/" + id, () => db.collection("made").doc(id).delete()); },
     };
   }
   /* ---------- 저장소를 쓸 수 없을 때: 이 브라우저(IndexedDB) ---------- */
@@ -94,12 +97,13 @@ const PLATFORM = (() => {
       async start(onChange) {
         try {
           dbh = await new Promise((res, rej) => {
-            const r = indexedDB.open("mathgen", 1);
-            r.onupgradeneeded = () => { r.result.createObjectStore("exams", {keyPath: "id"}); r.result.createObjectStore("problems", {keyPath: "id"}); };
+            const r = indexedDB.open("mathgen", 2); // 2판: 만든 문제 보관함(made) 추가
+            r.onupgradeneeded = () => { for (const n of ["exams", "problems", "made"]) if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, {keyPath: "id"}); };
             r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
           });
           for (const e of await req(os("exams", "readonly").getAll())) state.exams.set(e.id, e);
           for (const p of await req(os("problems", "readonly").getAll())) state.problems.set(p.id, upgradeProblem(p));
+          for (const m of await req(os("made", "readonly").getAll())) state.made.set(m.id, m);
         } catch (e) { dbh = null; }
         loaded = true; onChange();
       },
@@ -111,6 +115,8 @@ const PLATFORM = (() => {
         for (const p of [...state.problems.values()].filter(p => p.examId === id)) await this.deleteProblem(p);
         state.exams.delete(id); if (dbh) await req(os("exams", "readwrite").delete(id)).catch(() => {});
       },
+      async putMade(m) { state.made.set(m.id, m); if (dbh) await req(os("made", "readwrite").put(m)).catch(() => {}); },
+      async deleteMade(id) { state.made.delete(id); if (dbh) await req(os("made", "readwrite").delete(id)).catch(() => {}); },
     };
   }
 
