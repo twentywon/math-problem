@@ -35,7 +35,7 @@ function makeAnswer() {
   if (nMake === 0) out.push({kind: "유사문제", title: "베낀 문제", statement: "함수 $y=-x(x-6)$ 의 그래프 ...", choices: [], figure_description: "", figure_svg: "", answer: "9", solution_steps: ["베낌"], shared_concepts: [], relation_to_original: "", unit_id: "CM1-2-2", difficulty: 4});
   for (let i = 0; i < 2; i++) {
     const [title, statement, choices, answer] = MAKE_POOL[(nMake * 2 + i) % MAKE_POOL.length];
-    out.push({kind: "유사문제", title, statement, choices, figure_description: "", figure_svg: "", answer, solution_steps: ["계산한다."], shared_concepts: ["계산"], relation_to_original: "", unit_id: "CM1-1-1", difficulty: 4});
+    out.push({kind: "유사문제", title, statement, choices, figure_description: "", figure_svg: "", answer, solution_steps: ["계산한다."], shared_concepts: ["계산"], relation_to_original: "", reference_numbers: i === 0 ? [2] : [], unit_id: "CM1-1-1", difficulty: 4});
   }
   nMake++;
   return {problems: out};
@@ -458,6 +458,18 @@ const sse = obj => {
   if (makePrompts.length > 1 && !makePrompts[1].includes("베낀 문제")) fails.push("문제 만들기: 버린 문제를 다음 요청에 알림");
   if (mk.made !== 3 || !mk.units.every(u => /^CM1-/.test(u)) || !mk.diffs.every(x => x === 4) || mk.lib.join() !== libBefore.join() || mk.fresh !== 3)
     fails.push("문제 만들기 → 보관함 (저장소와 따로): " + JSON.stringify(mk));
+  // 참고한 문항: AI 가 고른 번호(2번 참고 문항) 또는 함께 보낸 참고 문항 전체, 칩을 누르면 그 문항 상세
+  const refs = await page.evaluate(() => [...state.made.values()].map(m => [m.g.referencesGuessed, (m.g.references || []).map(r => r.label).join("|"), (m.g.references || []).every(r => state.problems.has(r.id))]));
+  console.log("references:", JSON.stringify(refs));
+  if (!refs.some(r => r[0] === false && r[1].split("|").length === 1) || !refs.some(r => r[0] === true && r[1].split("|").length >= 2) || !refs.every(r => r[2] && /번/.test(r[1])))
+    fails.push("참고한 문항 기록: " + JSON.stringify(refs));
+  const chip = page.locator("#mk-results .gen.fresh .refs .ref-open").first();
+  const chipText = await chip.textContent();
+  await chip.click(); await page.waitForTimeout(300);
+  const opened = await page.evaluate(() => document.querySelector("#detail").open && document.querySelector("#detail .d-head").textContent.replace(/\s+/g, " "));
+  console.log("reference chip:", chipText, "->", (opened || "").slice(0, 60));
+  if (!opened || !opened.includes(chipText.replace(/.* (\d+)번$/, "$1"))) fails.push("참고 문항 칩 열기");
+  await page.click("#detail .close");
   await page.screenshot({path: `${OUT}/${MODE}-11-make.png`, fullPage: true});
   // 보관함: 원본 문항에서 만든 문제도 함께 보이고, 거르기·삭제가 된다
   const box = await page.evaluate(() => [madeEntries().length, madeEntries().filter(e => e.from === "derived").length]);

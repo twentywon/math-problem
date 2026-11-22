@@ -221,6 +221,9 @@ dialog#detail{overflow:hidden}
 #mk-results{display:grid;gap:12px}
 .gen.fresh{border-color:var(--omr);box-shadow:0 0 0 1px var(--omr) inset}
 .gen h4 small{font-weight:400;font-size:12px;margin-left:6px}
+.gen .refs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px}
+.chip.ref-open{cursor:pointer;border:1px solid var(--rule)}
+.chip.ref-open:hover{background:var(--hover)}
 .gen-img{max-width:100%;border:1px solid var(--rule);border-radius:6px;cursor:zoom-in;background:#fff}
 .p-fig.small svg{width:min(100%,320px);height:auto;background:#fff;border-radius:6px}
 /* 시험지 모양 (이미지로 만들 때). 화면 밖에서 그리므로 밝은·어두운 화면과 상관없이 흰 종이 */
@@ -1420,6 +1423,7 @@ const GEN_SYSTEM = `너는 한국 수능·모의고사 출제 경험이 많은 �
 - 원본이 공통 자료를 쓰는 문항이면, 새 문제는 필요한 자료를 본문 안에 직접 담아 혼자서도 풀리게 만든다.
 - 다 만든 뒤 스스로 끝까지 풀어 정답과 solution_steps(풀이 단계 배열)를 확인하고, 계산이 맞지 않으면 문제를 고친다. ${STEPS_RULE}
 - relation_to_original: 원본과 무엇이 같고 무엇이 다른지, 어떤 개념·접근법을 공유하는지.
+- reference_numbers: 요청에 [참고 문항] 목록이 있으면 이 문제가 형식을 주로 본뜬 참고 문항 번호(1부터)를 넣는다. 목록이 없으면 [].
 - unit_id: 아래 단원표 코드 중 새 문제가 주로 다루는 중단원.
 - difficulty: 원본의 '상대 난이도'(1~5)를 기준으로 새 문제의 난이도를 1~5 정수로 매긴다. 유사문제는 원본과 같게, 추가 요청이 있으면 그에 맞춘다.
 문제 유형
@@ -1429,11 +1433,11 @@ ${Object.entries(KINDS).map(([k, v]) => `- ${k}: ${v}`).join("\n")}
 ${curriculumText()}`;
 const GEN_SCHEMA = {type: "object", additionalProperties: false, required: ["problems"], properties: {problems: {type: "array", items: {
   type: "object", additionalProperties: false,
-  required: ["kind", "title", "statement", "choices", "figure_description", "figure_svg", "answer", "solution_steps", "shared_concepts", "relation_to_original", "unit_id", "difficulty"],
+  required: ["kind", "title", "statement", "choices", "figure_description", "figure_svg", "answer", "solution_steps", "shared_concepts", "relation_to_original", "reference_numbers", "unit_id", "difficulty"],
   properties: {
     kind: {type: "string", enum: Object.keys(KINDS)}, title: {type: "string"}, statement: {type: "string"}, choices: STR_ARR,
     figure_description: {type: "string"}, figure_svg: {type: "string"}, answer: {type: "string"}, solution_steps: STR_ARR, shared_concepts: STR_ARR,
-    relation_to_original: {type: "string"}, unit_id: UNIT_ENUM, difficulty: {type: "integer"},
+    relation_to_original: {type: "string"}, reference_numbers: {type: "array", items: {type: "integer"}}, unit_id: UNIT_ENUM, difficulty: {type: "integer"},
   }}}}};
 const VERIFY_SYSTEM = `너는 꼼꼼한 수학 검토자다. 주어진 문제들을 처음 보는 학생처럼 각각 직접 풀어라.
 - answer: 5지선다면 정답 번호(1~5)만, 단답형이면 값만.
@@ -1593,6 +1597,7 @@ function cleanGenerated(q) {
     choices: choices.length === 5 ? choices : [], figure_description: str(q.figure_description), figure_svg: cleanSvg(q.figure_svg), answer: str(q.answer).trim(),
     solution_steps: strArr(q.solution_steps).length ? strArr(q.solution_steps) : splitSteps(q.solution),
     shared_concepts: strArr(q.shared_concepts), relation_to_original: str(q.relation_to_original),
+    reference_numbers: (Array.isArray(q.reference_numbers) ? q.reference_numbers : []).map(Number).filter(Number.isInteger),
     unit_id: UNITS[q.unit_id] ? q.unit_id : null, difficulty: clampDiff(q.difficulty), createdAt: new Date().toISOString(), by: PLATFORM.ai.label(),
   };
 }
@@ -2465,6 +2470,8 @@ function genCardHTML(g, i) {
     <div class="row"><span class="chip red">${esc(g.kind)}</span>${g.unit_id ? `<span class="chip">${esc(UNITS[g.unit_id]?.section || "")}</span>` : ""}
       <span class="dots">${dots(g.difficulty)}</span>${verifyChip(v)}<span class="spacer"></span>${canEdit() ? `<button class="btn sm danger g-del">삭제</button>` : ""}</div>
     <h4>${i + 1}. ${esc(g.title)}</h4>
+    ${g.references?.length ? `<div class="refs"><span class="muted">${g.referencesGuessed ? "함께 보낸 참고 문항" : "참고한 문항"}</span>${g.references.map(r =>
+      `<button class="chip ref-open" data-ref-id="${esc(r.id)}" title="${esc(r.unit || "")}">${esc(r.label)}</button>`).join("")}</div>` : ""}
     <div class="seg-mini g-view" role="group" aria-label="보기 방식"><button data-v="text" aria-pressed="true">텍스트</button><button data-v="image" aria-pressed="false">이미지</button></div>
     <div class="g-text">
       <div class="math">${escBr(g.statement)}</div>
@@ -2622,7 +2629,8 @@ function madeEntries() {
   const out = [];
   for (const m of state.made.values()) out.push({key: "m:" + m.id, g: m.g, from: "make", madeId: m.id, at: m.createdAt || m.g?.createdAt || "", origin: m.request?.scope || ""});
   for (const p of state.problems.values()) (p.generated || []).forEach((g, i) =>
-    out.push({key: `p:${p.id}:${i}`, g, from: "derived", problemId: p.id, at: g.createdAt || "", origin: `원본: ${p.examTitle} ${p.number}번`}));
+    out.push({key: `p:${p.id}:${i}`, g: g.references ? g : {...g, references: [{id: p.id, label: `원본 ${p.examTitle} ${p.number}번`, unit: UNITS[p.unitId]?.label || ""}]},
+      from: "derived", problemId: p.id, at: g.createdAt || "", origin: `원본: ${p.examTitle} ${p.number}번`}));
   return out.sort((x, y) => (makeState.fresh.has(y.key) - makeState.fresh.has(x.key)) || str(y.at).localeCompare(str(x.at)));
 }
 function shownMade() {
@@ -2653,6 +2661,10 @@ function renderMakeResults() {
     : `<p class="muted">${all.length ? "조건에 맞는 만든 문제가 없습니다." : "아직 만든 문제가 없습니다."}</p>`;
   renderMath($("#mk-results"));
   bindGenTools($("#mk-results"), () => shown.map(e => e.g), (g, i) => madeFileName(shown[i], i));
+  $("#mk-results").querySelectorAll(".ref-open").forEach(b => b.onclick = () => {
+    const id = b.dataset.refId;
+    if (state.problems.has(id)) openDetail(id, [id]); else toast("그 문항은 문제 저장소에서 삭제되었습니다");
+  });
   $("#mk-results").querySelectorAll(".g-del").forEach(b => b.onclick = async () => {
     const e = shown[+b.closest(".gen").dataset.i]; if (!e) return;
     if (!(await askConfirm(`'${e.g.title}' 문제를 보관함에서 삭제할까요?${e.from === "derived" ? " (원본 문항의 만든 문제 목록에서도 지워집니다)" : ""}`, "삭제"))) return;
@@ -2672,7 +2684,7 @@ $("#mb-zip").onclick = async () => {
     for (const [i, e] of list.entries()) {
       b.textContent = `이미지 만드는 중… ${i + 1}/${list.length}`;
       zip.file(madeFileName(e, i) + ".png", await paperBlob(e.g, i + 1));
-      zip.file(madeFileName(e, i) + ".txt", genText(e.g, i + 1) + `\n\n[정답] ${e.g.answer}\n[풀이]\n${(e.g.solution_steps || []).map((x, k) => `${k + 1}. ${x}`).join("\n")}`);
+      zip.file(madeFileName(e, i) + ".txt", genText(e.g, i + 1) + `${e.g.references?.length ? `\n\n[참고한 문항] ${e.g.references.map(r => r.label).join(", ")}` : ""}\n\n[정답] ${e.g.answer}\n[풀이]\n${(e.g.solution_steps || []).map((x, k) => `${k + 1}. ${x}`).join("\n")}`);
     }
     await saveFile(`만든문제_${new Date().toISOString().slice(0, 10)}.zip`, await zip.generateAsync({type: "blob"}));
   } catch (err) { toast(err.message); }
@@ -2681,7 +2693,7 @@ $("#mb-zip").onclick = async () => {
 $("#mb-xlsx").onclick = async () => {
   const rows = shownMade().map((e, i) => ({"순번": i + 1, "만든 곳": e.from === "make" ? "문제 만들기" : "원본 문항", "원본": e.origin, "유형": e.g.kind, "제목": e.g.title,
     "단원": UNITS[e.g.unit_id]?.label || "", "난이도": e.g.difficulty, "문제": e.g.statement, "선택지": (e.g.choices || []).map((c, j) => `${MARKS[j]} ${c}`).join("  "),
-    "그림 설명": e.g.figure_description, "정답": e.g.answer, "풀이": (e.g.solution_steps || []).join("\n"),
+    "그림 설명": e.g.figure_description, "참고한 문항": (e.g.references || []).map(r => r.label).join(", "), "정답": e.g.answer, "풀이": (e.g.solution_steps || []).join("\n"),
     "검산": e.g.verification ? (e.g.verification.passed ? "통과" : "불일치") : "", "만든 때": e.at}));
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "만든 문제");
   await saveFile(`만든문제_${new Date().toISOString().slice(0, 10)}.xlsx`, new Blob([XLSX.write(wb, {bookType: "xlsx", type: "array"})]));
@@ -2728,6 +2740,8 @@ $("#mk-go").onclick = async () => {
     // 겹침 검사 대상: 저장된 모든 문항 + 이번에 만든 문제
     const seen = [...state.problems.values()].filter(p => p.classification?.transcription).map(p => ({text: p.classification.transcription, label: `${p.examTitle} ${p.number}번`}))
       .concat(madeEntries().map(e => ({text: genText(e.g, 0), label: `보관함 '${e.g.title}'`})));
+    // 같은 번호가 두 번 나오는 시험지(선택과목 구간)는 구간도 적는다
+    const refInfo = refs.picked.map(p => ({id: p.id, label: `${p.examTitle} ${p.number}번${p.section ? ` (구간 ${p.section + 1})` : ""}`, unit: UNITS[p.unitId]?.label || ""}));
     const refText = refs.picked.length ? [
       `[참고 문항] 저장소의 실제 문항 ${refs.picked.length}개(${refs.where})다. 앞의 ${refImages.length}개는 이미지도 함께 보낸다.`,
       `이 문항들의 문장 투, 조건을 주는 방식, 선택지·<보기> 구성, 배점 표기, 그림을 쓰는 방식 같은 '형식과 유형'만 본떠라.`,
@@ -2764,6 +2778,8 @@ $("#mk-go").onclick = async () => {
         g.kind = "새 문제";
         if (!scope.ids.includes(g.unit_id)) g.unit_id = scope.ids[0];
         if (diff !== "mix") g.difficulty = +diff;
+        const chosen = [...new Set(g.reference_numbers || [])].map(k => refInfo[k - 1]).filter(Boolean);
+        g.references = chosen.length ? chosen : refInfo; g.referencesGuessed = !chosen.length && refInfo.length > 0;
       }
       if (verify) { status(`검산 중… (${batch.length}문제를 처음 보는 사람처럼 다시 풉니다)`); await verifyMade(batch); }
       for (const g of batch) {
