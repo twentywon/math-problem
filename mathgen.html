@@ -205,6 +205,17 @@ dialog#detail[open]{display:grid;grid-template-rows:auto minmax(0,1fr)}
 .kv dt{color:var(--muted)} .kv dd{margin:0;min-width:0}
 .gen{border:1px solid var(--rule);border-radius:var(--radius);padding:14px;display:grid;gap:10px;min-width:0}
 .gen h4{font-size:16px}
+.g-view{justify-self:start}
+.gen-img{max-width:100%;border:1px solid var(--rule);border-radius:6px;cursor:zoom-in;background:#fff}
+.p-fig.small svg{width:min(100%,320px);height:auto;background:#fff;border-radius:6px}
+/* 시험지 모양 (이미지로 만들 때). 화면 밖에서 그리므로 밝은·어두운 화면과 상관없이 흰 종이 */
+.paper-host{position:fixed;left:-10000px;top:0;width:680px;z-index:-1}
+.paper{width:680px;box-sizing:border-box;padding:28px 32px 30px;background:#fff;color:#111;font-family:"Nanum Myeongjo","AppleMyungjo","Batang",serif;font-size:17px;line-height:1.9}
+.paper .p-no{font-family:"IBM Plex Sans KR",sans-serif;font-weight:600;margin-right:4px}
+.paper .p-fig{text-align:center;margin:14px 0}
+.paper .p-fig svg{width:400px;max-width:100%;height:auto}
+.paper .p-choices{list-style:none;margin:16px 0 0;padding:0;display:grid;grid-template-columns:repeat(5,1fr);gap:6px 10px}
+.paper .p-choices.long{grid-template-columns:repeat(2,1fr)}
 .choices{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:4px 12px;margin:0;padding:0;list-style:none}
 .reveal{border-top:1px dashed var(--rule);padding-top:10px;display:grid;gap:10px}
 .gen-form{background:var(--sunken);border-radius:var(--radius);padding:12px;display:grid;gap:8px}
@@ -235,6 +246,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 </head>
@@ -1349,6 +1361,7 @@ const GEN_SYSTEM = `너는 한국 수능·모의고사 출제 경험이 많은 �
 - 수식은 LaTeX 로 $...$ (줄 수식은 $$...$$) 안에 쓴다.
 - 5지선다면 choices 에 선택지 5개를 넣고 answer 에는 정답 번호(1~5)만 쓴다. 단답형이면 choices 는 [], answer 는 값만 (0 이상 999 이하 정수 권장).
 - 그림이 꼭 필요하면 figure_description 에 그릴 수 있을 만큼 자세히 쓰되 본문만으로도 풀 수 있게 조건을 글로 적는다. 없으면 빈 문자열.
+- 그림이 있으면 figure_svg 에 시험지에 넣을 그림을 SVG 하나로 그린다. <svg viewBox="0 0 400 300"> 안에 line, polyline, polygon, path, circle, ellipse, rect, text 만 쓰고, 검은 선(stroke="#000", fill="none")과 흰 바탕, 좌표축·점 이름·길이 같은 라벨을 넣는다. 문제 조건과 정확히 맞게 그리고, 그림이 없으면 빈 문자열.
 - 원본이 공통 자료를 쓰는 문항이면, 새 문제는 필요한 자료를 본문 안에 직접 담아 혼자서도 풀리게 만든다.
 - 다 만든 뒤 스스로 끝까지 풀어 정답과 solution_steps(풀이 단계 배열)를 확인하고, 계산이 맞지 않으면 문제를 고친다. ${STEPS_RULE}
 - relation_to_original: 원본과 무엇이 같고 무엇이 다른지, 어떤 개념·접근법을 공유하는지.
@@ -1361,10 +1374,10 @@ ${Object.entries(KINDS).map(([k, v]) => `- ${k}: ${v}`).join("\n")}
 ${curriculumText()}`;
 const GEN_SCHEMA = {type: "object", additionalProperties: false, required: ["problems"], properties: {problems: {type: "array", items: {
   type: "object", additionalProperties: false,
-  required: ["kind", "title", "statement", "choices", "figure_description", "answer", "solution_steps", "shared_concepts", "relation_to_original", "unit_id", "difficulty"],
+  required: ["kind", "title", "statement", "choices", "figure_description", "figure_svg", "answer", "solution_steps", "shared_concepts", "relation_to_original", "unit_id", "difficulty"],
   properties: {
     kind: {type: "string", enum: Object.keys(KINDS)}, title: {type: "string"}, statement: {type: "string"}, choices: STR_ARR,
-    figure_description: {type: "string"}, answer: {type: "string"}, solution_steps: STR_ARR, shared_concepts: STR_ARR,
+    figure_description: {type: "string"}, figure_svg: {type: "string"}, answer: {type: "string"}, solution_steps: STR_ARR, shared_concepts: STR_ARR,
     relation_to_original: {type: "string"}, unit_id: UNIT_ENUM, difficulty: {type: "integer"},
   }}}}};
 const VERIFY_SYSTEM = `너는 꼼꼼한 수학 검토자다. 주어진 문제들을 처음 보는 학생처럼 각각 직접 풀어라.
@@ -1414,13 +1427,82 @@ function originalText(p) {
     `핵심 개념: ${(c.key_concepts || []).join(", ")}`, `핵심 접근법: ${c.solution_approach || ""}`,
     `상대 난이도: ${diffLevel(p) || "?"}/5`, `정답: ${aiAnswer(p)}`, `풀이:\n${(steps || []).map((s, i) => `${i + 1}. ${s}`).join("\n")}`].join("\n");
 }
+/* ---------- 만든 문제 그림: AI 가 그린 SVG 를 안전하게 정리하고, 문제를 시험지 모양 이미지로 만든다 ---------- */
+const SVG_TAGS = new Set(["svg", "g", "line", "polyline", "polygon", "path", "circle", "ellipse", "rect", "text", "tspan", "defs", "marker"]);
+const SVG_ATTRS = new Set(["viewBox", "width", "height", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "d", "points", "dx", "dy",
+  "fill", "stroke", "stroke-width", "stroke-dasharray", "stroke-linecap", "stroke-linejoin", "opacity", "fill-opacity",
+  "font-size", "font-style", "font-weight", "text-anchor", "dominant-baseline", "transform", "id", "marker-end", "marker-start",
+  "markerWidth", "markerHeight", "refX", "refY", "orient", "markerUnits"]);
+// 허용한 도형·속성만 남긴다 (스크립트, 링크, 외부 그림, 이벤트 속성은 모두 뺀다). 그릴 수 없으면 ""
+function cleanSvg(text) {
+  text = str(text).trim();
+  if (!text.includes("<svg")) return "";
+  try {
+    const doc = new DOMParser().parseFromString(text.slice(text.indexOf("<svg"), text.lastIndexOf("</svg>") + 6), "image/svg+xml");
+    const root = doc.documentElement;
+    if (!root || root.nodeName !== "svg" || doc.querySelector("parsererror")) return "";
+    const walk = el => {
+      for (const child of [...el.children]) {
+        if (!SVG_TAGS.has(child.nodeName)) { child.remove(); continue; }
+        for (const a of [...child.attributes]) {
+          const v = a.value;
+          if (!SVG_ATTRS.has(a.name) || /url\(\s*['"]?(?!#)|javascript:|expression/i.test(v)) child.removeAttribute(a.name);
+        }
+        walk(child);
+      }
+    };
+    for (const a of [...root.attributes]) if (!SVG_ATTRS.has(a.name) && a.name !== "xmlns") root.removeAttribute(a.name);
+    walk(root);
+    if (!root.getAttribute("viewBox")) root.setAttribute("viewBox", `0 0 ${parseFloat(root.getAttribute("width")) || 400} ${parseFloat(root.getAttribute("height")) || 300}`);
+    root.removeAttribute("width"); root.removeAttribute("height");
+    root.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    const out = new XMLSerializer().serializeToString(root);
+    return out.length > 60000 ? "" : out;
+  } catch (e) { return ""; }
+}
+// 시험지 모양 문제 (번호, 본문, 그림, 선택지). 이미지로 만들 때와 화면 미리보기에 같이 쓴다
+function paperHTML(g, no) {
+  const ch = g.choices || [], long = ch.some(c => str(c).replace(/\$/g, "").length > 14);
+  return `<div class="paper">
+    <div class="p-body"><span class="p-no">${esc(String(no))}.</span> ${escBr(g.statement)}</div>
+    ${g.figure_svg ? `<div class="p-fig">${g.figure_svg}</div>` : ""}
+    ${ch.length ? `<ol class="p-choices${long ? " long" : ""}">${ch.map((c, j) => `<li>${MARKS[j]} ${escBr(c)}</li>`).join("")}</ol>` : ""}
+  </div>`;
+}
+// 화면 밖에서 시험지 모양으로 그린 뒤 PNG 로 만든다
+async function paperBlob(g, no) {
+  if (!window.html2canvas) throw new Error("이미지 만들기 도구를 불러오지 못했습니다. 인터넷 연결을 확인하세요.");
+  const host = document.createElement("div");
+  host.className = "paper-host"; host.innerHTML = paperHTML(g, no);
+  document.body.appendChild(host);
+  try {
+    renderMath(host);
+    await document.fonts?.ready;
+    const canvas = await html2canvas(host.firstElementChild, {backgroundColor: "#ffffff", scale: 2, logging: false});
+    return await canvasToBlob(canvas);
+  } finally { host.remove(); }
+}
+const genFileName = (p, g, i) => `${safeFile(p.examTitle)}_${pad2(p.number)}번_만든문제${pad2(i + 1)}_${safeFile(g.kind)}`;
+const genText = (g, no) => [`${no}. ${g.statement}`, g.figure_description ? `[그림] ${g.figure_description}` : "",
+  (g.choices || []).map((c, j) => `${MARKS[j]} ${c}`).join("  ")].filter(Boolean).join("\n\n");
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch (e) {
+    const ta = document.createElement("textarea"); ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); let ok = false; try { ok = document.execCommand("copy"); } catch (e2) { /* 복사 불가 */ }
+    ta.remove(); return ok;
+  }
+}
+async function copyImage(blob) {
+  try { await navigator.clipboard.write([new ClipboardItem({"image/png": blob})]); return true; } catch (e) { return false; }
+}
 function cleanGenerated(q) {
   const statement = str(q?.statement);
   if (!statement) return null;
   const choices = strArr(q.choices);
   return {
     kind: Object.keys(KINDS).includes(q.kind) ? q.kind : "유사문제", title: str(q.title) || "새 문제", statement,
-    choices: choices.length === 5 ? choices : [], figure_description: str(q.figure_description), answer: str(q.answer).trim(),
+    choices: choices.length === 5 ? choices : [], figure_description: str(q.figure_description), figure_svg: cleanSvg(q.figure_svg), answer: str(q.answer).trim(),
     solution_steps: strArr(q.solution_steps).length ? strArr(q.solution_steps) : splitSteps(q.solution),
     shared_concepts: strArr(q.shared_concepts), relation_to_original: str(q.relation_to_original),
     unit_id: UNITS[q.unit_id] ? q.unit_id : null, difficulty: clampDiff(q.difficulty), createdAt: new Date().toISOString(), by: PLATFORM.ai.label(),
@@ -2267,9 +2349,19 @@ function genCardHTML(g, i) {
     <div class="row"><span class="chip red">${esc(g.kind)}</span>${g.unit_id ? `<span class="chip">${esc(UNITS[g.unit_id]?.section || "")}</span>` : ""}
       <span class="dots">${dots(g.difficulty)}</span>${verifyChip(v)}<span class="spacer"></span>${canEdit() ? `<button class="btn sm danger g-del">삭제</button>` : ""}</div>
     <h4>${i + 1}. ${esc(g.title)}</h4>
-    <div class="math">${escBr(g.statement)}</div>
-    ${g.figure_description ? `<p class="muted">[그림] ${escBr(g.figure_description)}</p>` : ""}
-    ${g.choices?.length ? `<ol class="choices math">${g.choices.map((ch, j) => `<li>${MARKS[j]} ${escBr(ch)}</li>`).join("")}</ol>` : ""}
+    <div class="seg-mini g-view" role="group" aria-label="보기 방식"><button data-v="text" aria-pressed="true">텍스트</button><button data-v="image" aria-pressed="false">이미지</button></div>
+    <div class="g-text">
+      <div class="math">${escBr(g.statement)}</div>
+      ${g.figure_svg ? `<div class="p-fig small">${g.figure_svg}</div>` : ""}
+      ${g.figure_description ? `<p class="muted">[그림 설명] ${escBr(g.figure_description)}</p>` : ""}
+      ${g.choices?.length ? `<ol class="choices math">${g.choices.map((ch, j) => `<li>${MARKS[j]} ${escBr(ch)}</li>`).join("")}</ol>` : ""}
+    </div>
+    <div class="g-image" hidden><p class="muted">시험지 모양 이미지를 만드는 중…</p></div>
+    <div class="row g-tools">
+      <button class="btn sm g-copy-text">텍스트 복사</button>
+      <button class="btn sm g-copy-img">이미지 복사</button>
+      ${PLATFORM.canSave() ? `<button class="btn sm g-save-img">이미지 저장</button>` : ""}
+    </div>
     <details><summary>정답과 풀이 보기</summary><div class="reveal">
       <div class="ans-row"><span class="lab">정답</span><div class="val">${answerHTML(g.answer, type)}</div></div>
       ${stepsHTML(g.solution_steps?.length ? g.solution_steps : splitSteps(g.solution))}
@@ -2293,7 +2385,7 @@ function genTabHTML(p) {
       <div class="muted gen-msg" role="status"></div>
     </div>` : `<p class="muted">${canEdit() ? "AI 를 쓸 수 있을 때 문제를 만들 수 있습니다." : "보기 전용이라 문제를 만들 수 없습니다."}</p>`}
     ${gens.length ? `<div class="row"><span class="muted">만든 문제 ${gens.length}개 · 검산 통과 ${gens.filter(g => g.verification?.passed).length}개</span><span class="spacer"></span>
-      ${PLATFORM.canSave() ? `<button class="btn sm save-sheet">학습지 HTML 저장</button>` : ""}</div>` : ""}
+      ${PLATFORM.canSave() ? `<button class="btn sm save-sheet">학습지 HTML 저장</button><button class="btn sm save-gen-imgs">문제 이미지 모두 저장 (ZIP)</button>` : ""}</div>` : ""}
     ${gens.map(genCardHTML).join("") || `<p class="muted">아직 만든 문제가 없습니다.</p>`}`;
 }
 function bindDetail(p) {
@@ -2305,7 +2397,7 @@ function bindDetail(p) {
   };
   d.querySelectorAll(".do-classify").forEach(b => b.onclick = () => busy(b, "분류하고 푸는 중…", () => classifyOne(id)));
   d.querySelectorAll(".do-solve").forEach(b => b.onclick = () => busy(b, "푸는 중…", () => solveProblem(id)));
-  d.querySelectorAll(".seg-mini button").forEach(b => b.onclick = () => { detailState.solSource = b.dataset.src; renderDetail(); });
+  d.querySelectorAll(".seg-mini:not(.g-view) button").forEach(b => b.onclick = () => { detailState.solSource = b.dataset.src; renderDetail(); });
   d.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => {
     const v = b.dataset.pick, now = str(cur().officialAnswer);
     await saveProblem({...cur(), officialAnswer: normalizeAnswer(now) === v ? "" : v}); renderDetail();
@@ -2339,6 +2431,48 @@ function bindDetail(p) {
     const i = +b.closest(".gen").dataset.i, x = cur();
     await saveProblem({...x, generated: (x.generated || []).filter((_, k) => k !== i)}); renderDetail();
   });
+  // 만든 문제: 텍스트·이미지 보기, 복사, 저장
+  const genOf = b => { const i = +b.closest(".gen").dataset.i; return [cur().generated[i], i]; };
+  const imgCache = new Map();
+  const genImage = async (g, i) => { if (!imgCache.has(i)) imgCache.set(i, await paperBlob(g, i + 1)); return imgCache.get(i); };
+  d.querySelectorAll(".g-view button").forEach(b => b.onclick = async () => {
+    const card = b.closest(".gen"), [g, i] = genOf(b), img = b.dataset.v === "image";
+    card.querySelectorAll(".g-view button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    card.querySelector(".g-text").hidden = img; card.querySelector(".g-image").hidden = !img;
+    if (img && !card.querySelector(".g-image img")) {
+      try {
+        const url = await blobToDataURL(await genImage(g, i));
+        card.querySelector(".g-image").innerHTML = `<img src="${url}" alt="${i + 1}번 만든 문제 이미지" class="gen-img">`;
+        card.querySelector(".gen-img").onclick = () => { $("#zoom-img").src = url; $("#zoom").showModal(); };
+      } catch (e) { card.querySelector(".g-image").innerHTML = `<p class="notice">${esc(e.message)}</p>`; }
+    }
+  });
+  d.querySelectorAll(".g-copy-text").forEach(b => b.onclick = async () => { const [g, i] = genOf(b); toast(await copyText(genText(g, i + 1)) ? "문제 텍스트를 복사했습니다 (수식은 LaTeX)" : "복사하지 못했습니다"); });
+  d.querySelectorAll(".g-copy-img").forEach(b => b.onclick = async () => {
+    const [g, i] = genOf(b);
+    try {
+      const blob = await genImage(g, i);
+      if (await copyImage(blob)) toast("문제 이미지를 복사했습니다");
+      else if (PLATFORM.canSave()) { await saveFile(genFileName(cur(), g, i) + ".png", blob); }
+      else toast("이 화면에서는 이미지를 복사할 수 없습니다");
+    } catch (e) { toast(e.message); }
+  });
+  d.querySelectorAll(".g-save-img").forEach(b => b.onclick = async () => {
+    const [g, i] = genOf(b);
+    try { await saveFile(genFileName(cur(), g, i) + ".png", await genImage(g, i)); } catch (e) { toast(e.message); }
+  });
+  if (q(".save-gen-imgs")) q(".save-gen-imgs").onclick = async () => {
+    const b = q(".save-gen-imgs"), p0 = cur(), zip = new JSZip(); b.disabled = true;
+    try {
+      for (const [i, g] of (p0.generated || []).entries()) {
+        b.textContent = `이미지 만드는 중… ${i + 1}/${p0.generated.length}`;
+        const name = genFileName(p0, g, i);
+        zip.file(name + ".png", await genImage(g, i)); zip.file(name + ".txt", genText(g, i + 1));
+      }
+      await saveFile(`${safeFile(p0.examTitle)}_${pad2(p0.number)}번_만든문제.zip`, await zip.generateAsync({type: "blob"}));
+    } catch (e) { toast(e.message); }
+    b.disabled = false; b.textContent = "문제 이미지 모두 저장 (ZIP)";
+  };
   if (q(".save-sheet")) q(".save-sheet").onclick = async () => saveFile(`${safeFile(p.examTitle)}_${pad2(p.number)}번_연계문제.html`, new Blob([await worksheetHTML(cur())], {type: "text/html"}));
 }
 
@@ -2350,7 +2484,7 @@ async function worksheetHTML(p) {
   const gens = (p.generated || []).map((g, i) => {
     const steps = g.solution_steps?.length ? g.solution_steps : splitSteps(g.solution);
     return `<section class="q"><h2>${i + 1}. ${esc(g.title)} <small>${esc(g.kind)}</small></h2><div>${escBr(g.statement)}</div>
-      ${g.figure_description ? `<p class="m">[그림] ${escBr(g.figure_description)}</p>` : ""}
+      ${g.figure_svg ? `<div class="fig">${g.figure_svg}</div>` : g.figure_description ? `<p class="m">[그림] ${escBr(g.figure_description)}</p>` : ""}
       ${g.choices?.length ? `<ol class="ch">${g.choices.map((ch, j) => `<li>${MARKS[j]} ${escBr(ch)}</li>`).join("")}</ol>` : ""}
       <details><summary>정답과 풀이</summary><p><b>정답</b> ${esc(g.answer)}</p><ol>${steps.map(s => `<li>${escBr(s)}</li>`).join("")}</ol></details></section>`;
   }).join("\n");
@@ -2362,7 +2496,7 @@ async function worksheetHTML(p) {
 <style>body{font-family:system-ui,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;max-width:820px;margin:0 auto;padding:24px 16px;line-height:1.75;color:#1c1d1f;background:#fff}
 h1{font-size:22px}h2{font-size:17px}small{font-weight:400;color:#a32a21;font-size:13px;margin-left:6px}.m{color:#5f636a}
 img{max-width:min(100%,640px);border:1px solid #dcded8;border-radius:6px}.q{border-top:1px solid #dcded8;padding:12px 0;break-inside:avoid}
-.ch{list-style:none;padding:0;display:flex;gap:18px;flex-wrap:wrap}summary{cursor:pointer;color:#5f636a}@media print{details{display:none}}</style></head><body>
+.ch{list-style:none;padding:0;display:flex;gap:18px;flex-wrap:wrap}.fig svg{width:min(100%,400px);height:auto}summary{cursor:pointer;color:#5f636a}@media print{details{display:none}}</style></head><body>
 <h1>${esc(p.examTitle)} ${p.number}번 — 유사·연계 문제</h1>
 <p class="m">${esc(UNITS[p.unitId]?.label || "미분류")} · 핵심 개념: ${esc((c.key_concepts || []).join(", "))}</p>
 <img src="${img}" alt="원본 문제">

@@ -4,7 +4,7 @@
 //   node tests/e2e_html.js artifact   <libs> <아티팩트 폴더(node tools/build-artifact.js 결과)> <tests/fixtures/group.pdf> <출력 폴더>
 // 같은 폴더의 first.pdf, sample.pdf 도 쓴다. 확인이 하나라도 실패하면 종료 코드 1.
 //
-// <libs>: npm pack 으로 받아 푼 katex(package/), pdfjs(pdfjs/package/), jszip(jszip/package/), xlsx(xlsx/package/) 가 있는 폴더
+// <libs>: npm pack 으로 받아 푼 katex(package/), pdfjs(pdfjs/package/), jszip(jszip/package/), xlsx(xlsx/package/), html2canvas(h2c/package/) 가 있는 폴더
 const { chromium } = require("playwright");
 const fs = require("fs");
 const http = require("http");
@@ -16,6 +16,7 @@ function local(url) {
   if (url.includes("pdf.js/3.11.174/")) { const t = url.split("3.11.174/")[1]; return `${K}/pdfjs/package/${/^(cmaps|standard_fonts)/.test(t) ? "" : "build/"}${t}`; }
   if (url.includes("jszip/")) return `${K}/jszip/package/dist/jszip.min.js`;
   if (url.includes("xlsx/")) return `${K}/xlsx/package/dist/xlsx.full.min.js`;
+  if (url.includes("html2canvas/")) return `${K}/h2c/package/dist/html2canvas.min.js`;
 }
 // 가짜 AI: 지시문 내용으로 어떤 작업인지 구분해 그럴듯한 JSON 을 돌려준다
 const units = ["CM1-2-2", "CM2-1-3", "ALG-1-1", "CM1-2-3"];
@@ -29,7 +30,8 @@ function answerFor(prompt) {
   }
   if (prompt.includes("출제 경험")) return {problems: [
     {kind: "유사문제", title: "넓이가 최대인 삼각형", statement: "이차함수 $y=-x(x-8)$ 의 그래프 위의 점 P 에 대하여 삼각형 OAP 의 넓이가 최대일 때, 점 P 의 $y$좌표는?",
-      choices: ["$12$", "$14$", "$16$", "$18$", "$20$"], figure_description: "", answer: "3",
+      choices: ["$12$", "$14$", "$16$", "$18$", "$20$"], figure_description: "포물선과 x축의 두 교점 O, A, 포물선 위의 점 P",
+      figure_svg: '<svg viewBox="0 0 400 300" onload="alert(1)"><script>alert(2)</script><line x1="20" y1="260" x2="380" y2="260" stroke="#000"/><path d="M40 260 Q200 -60 360 260" stroke="#000" fill="none" onclick="x()"/><text x="34" y="280">O</text><text x="356" y="280">A</text><image href="http://evil.example/x.png"/><circle cx="250" cy="120" r="4" fill="#000"/><text x="258" y="114">P</text></svg>', answer: "3",
       solution_steps: ["밑변 $\\overline{OA}=8$ 은 고정이므로 높이가 최대일 때 넓이가 최대이다.", "높이는 점 P 의 $y$좌표이고, $y=-(x-4)^2+16$ 이므로 최댓값은 $16$ 이다.", "따라서 정답은 ③ $16$ 이다."],
       shared_concepts: ["이차함수의 최대"], relation_to_original: "함수만 바꾸고 같은 방법으로 푼다", unit_id: "CM1-2-2", difficulty: 2},
     {kind: "개념연계문제", title: "지름 위의 원주각", statement: "원 $x^2+y^2=25$ 위의 점 P 와 지름의 양 끝 A, B 에 대하여 $\\angle APB$ 의 크기(도)는?",
@@ -213,6 +215,21 @@ const sse = obj => {
   await page.waitForTimeout(300);
   console.log("gen cards:", await page.locator("#detail .gen").count(), "verify chips:", (await page.locator("#detail .gen .chip.ok, #detail .gen .chip.warn").allTextContents()).join(","));
   await page.screenshot({path: `${OUT}/${MODE}-5-gen.png`});
+  // 만든 문제: 그림 정리(스크립트·이벤트·외부 그림 제거), 시험지 모양 이미지, 텍스트 복사
+  const svgInfo = await page.evaluate(() => { const s = document.querySelector("#detail .gen .p-fig svg"); return s ? [s.querySelectorAll("line,path,circle,text").length, /script|onload|onclick|image|evil/.test(s.outerHTML)] : null; });
+  console.log("gen svg:", JSON.stringify(svgInfo));
+  if (!svgInfo || svgInfo[0] < 5 || svgInfo[1]) fails.push("만든 문제 그림 정리: " + JSON.stringify(svgInfo));
+  await page.locator("#detail .gen .g-view button[data-v=image]").first().click();
+  await page.waitForSelector("#detail .gen .gen-img", {timeout: 20000});
+  const genImg = await page.evaluate(() => { const i = document.querySelector("#detail .gen .gen-img"); return [i.naturalWidth, i.naturalHeight]; });
+  console.log("gen image:", JSON.stringify(genImg));
+  if (!(genImg[0] >= 1200 && genImg[1] > 300)) fails.push("만든 문제 이미지: " + genImg);
+  await page.screenshot({path: `${OUT}/${MODE}-5b-gen-image.png`});
+  const pngData = await page.evaluate(() => document.querySelector("#detail .gen .gen-img").src.split(",")[1]);
+  fs.writeFileSync(`${OUT}/${MODE}-gen-problem.png`, Buffer.from(pngData, "base64"));
+  const txt = await page.evaluate(() => genText(state.problems.get(detailState.id).generated[0], 1));
+  console.log("gen text:", JSON.stringify(txt.slice(0, 80)));
+  if (!/^1\. 이차함수/.test(txt) || !/① \$12\$/.test(txt)) fails.push("만든 문제 텍스트");
   await page.click("#detail .next"); await page.waitForTimeout(200);
   console.log("next ->", (await page.textContent("#detail .crumb")).slice(-6));
   await page.click("#detail .close");
