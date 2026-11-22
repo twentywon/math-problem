@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>모의고사 문제 도우미</title>
-<!-- 이 파일은 tools/build.py 가 src/ 로부터 만든 결과물입니다. 고칠 때는 src/ 를 고친 뒤 다시 빌드하세요. -->
+<!--
+  모의고사 문제 도우미 — 이 파일 하나가 프로그램 전체입니다 (빌드 단계 없음, 이 파일을 직접 고칩니다).
+  구성: <style> 화면 디자인 · <body> 화면 뼈대 · <script> 앞부분 PLATFORM(AI 제공자 설정·API 호출, 브라우저 저장, 파일 저장, 폴더 감시)
+        · 뒷부분 공통 기능(PDF 자르기, 단원 분류·풀이, 상대 난이도, 문제 생성·검산, 문항 표, 내보내기)
+-->
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans+KR:wght@400;600&family=Nanum+Myeongjo:wght@700;800&display=swap">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
