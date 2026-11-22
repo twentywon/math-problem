@@ -1,9 +1,6 @@
 __pycache__/
-*.pyc
-.venv/
-.pytest_cache/
-# 모의고사 원본·생성 결과는 저작권 문제로 저장소에 올리지 않는다
-library/
-inbox/*.pdf
-inbox/done/
+node_modules/
 dist/
+# 실제 모의고사 PDF 는 저작권 문제로 올리지 않는다 (tests/fixtures 의 합성 PDF 만 예외)
+*.pdf
+!tests/fixtures/*.pdf

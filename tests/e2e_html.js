@@ -1,7 +1,8 @@
 // 브라우저 통합 테스트 (Playwright). CDN 은 로컬 npm 패키지로, AI 는 가짜 응답으로 대체한다.
 //
-//   node tests/e2e_html.js standalone <libs> <mathgen.html> <group.pdf> <출력 폴더>
-//   node tests/e2e_html.js artifact   <libs> <아티팩트 폴더(mathgen-artifact.html 등)> <group.pdf> <출력 폴더>
+//   node tests/e2e_html.js standalone <libs> <mathgen.html> <tests/fixtures/group.pdf> <출력 폴더>
+//   node tests/e2e_html.js artifact   <libs> <아티팩트 폴더(mathgen-artifact.html 등)> <tests/fixtures/group.pdf> <출력 폴더>
+// 같은 폴더의 first.pdf, sample.pdf 도 쓴다. 확인이 하나라도 실패하면 종료 코드 1.
 //
 // <libs>: npm pack 으로 받아 푼 katex(package/), pdfjs(pdfjs/package/), jszip(jszip/package/), xlsx(xlsx/package/) 가 있는 폴더
 const { chromium } = require("playwright");
@@ -120,6 +121,24 @@ const sse = obj => {
   page.on("pageerror", e => errors.push("pageerror: " + e.message));
   page.on("console", m => { if (m.type() === "error") errors.push("console: " + m.text()); });
   await page.goto(url);
+  // 자르기 회귀 확인 (텍스트 분석, AI 없이)
+  const fails = [];
+  const check = (cond, msg) => { if (!cond) fails.push(msg); };
+  const FIX = path.dirname(PDF);
+  const split = f => page.evaluate(async b64 => {
+    const buf = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const r = await splitPdf(buf, "text", () => {});
+    return r.crops.map(c => ({n: c.number, sec: c.section, shared: c.shared || "", rect: c.rect}));
+  }, fs.readFileSync(path.join(FIX, f)).toString("base64"));
+  await page.waitForFunction(() => window.pdfjsLib && typeof splitPdf === "function");
+  const first = await split("first.pdf"), group = await split("group.pdf"), sample = await split("sample.pdf");
+  check(first.map(c => c.n).join() === "1,2,3,4", "first.pdf: 1~4번을 모두 찾아야 함 → " + first.map(c => c.n).join());
+  check(first[0] && first[0].rect[2] >= 728 / 2 - 6, "first.pdf: 글자보다 넓은 조건 상자가 잘리지 않아야 함");
+  check(first[1] && first[1].rect[3] < 1031 - 70, "first.pdf: 2번 영역이 쪽 번호 상자 위에서 끝나야 함");
+  check(first[1] && first[1].rect[2] < 728 / 2 + 30, "first.pdf: 2번이 왼쪽 단 폭이어야 함 (오른쪽 단 4번이 섞이면 안 됨)");
+  check(group.map(c => `${c.n}${c.shared}`).join() === "10,1111~12,1211~12,13", "group.pdf: 공통 자료는 11·12번에만 → " + group.map(c => `${c.n}${c.shared}`).join());
+  check(sample.length === 20 && sample.filter(c => c.sec === 1).length === 4, "sample.pdf: 20문항, 다시 시작하는 구간 4문항 → " + sample.map(c => c.n).join());
+  console.log("split checks:", fails.length ? fails : "ok");
   const saved = [];
   page.on("download", async d => { saved.push(d.suggestedFilename()); await d.saveAs(path.join(OUT, d.suggestedFilename())); });
 
@@ -226,5 +245,7 @@ const sse = obj => {
   await page.locator("#grid .card").nth(1).click(); await page.waitForTimeout(300);
   await page.screenshot({path: `${OUT}/${MODE}-8-dark.png`});
   console.log("errors:", errors.length ? errors : "none");
+  if (errors.length) fails.push("페이지 오류 " + errors.length + "건");
   await b.close(); if (server) server.close();
+  if (fails.length) { console.log("FAILED:", fails); process.exitCode = 1; }
 })();
