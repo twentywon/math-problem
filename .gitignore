@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# 모의고사 원본·생성 결과는 저작권 문제로 저장소에 올리지 않는다
+library/
+inbox/*.pdf
+inbox/done/
