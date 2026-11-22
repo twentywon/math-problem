@@ -415,6 +415,38 @@ const sse = obj => {
   console.log("title:", await page.title());
   if (await page.title() !== "수학 문제 도우미") fails.push("제목");
 
+  // ④ 문제 만들기: 단원 범위(공통수학1 전체)·난이도·유형·개수
+  await page.click("nav.tabs button[data-tab=make]");
+  await page.selectOption("#mk-unit .up-subj", "CM1");
+  await page.selectOption("#mk-diff", "4"); await page.selectOption("#mk-type", "5지선다");
+  await page.fill("#mk-count", "3"); await page.fill("#mk-target", "테스트 생성");
+  await page.click("#mk-go");
+  await page.waitForFunction(() => /저장했습니다|실패/.test(document.querySelector("#mk-status").textContent), null, {timeout: 60000});
+  const mk = await page.evaluate(() => {
+    const ex = [...state.exams.values()].find(e => e.title === "테스트 생성");
+    const ps = ex ? [...state.problems.values()].filter(p => p.examId === ex.id).sort((a, b) => a.order - b.order) : [];
+    return {status: document.querySelector("#mk-status").textContent, kind: ex?.kind, nums: ps.map(p => p.number), units: ps.map(p => p.unitId),
+      scores: ps.map(p => p.classification?.difficulty_score), images: ps.filter(p => p.image).length, cards: document.querySelectorAll("#mk-results .gen").length};
+  });
+  console.log("make:", JSON.stringify(mk));
+  if (mk.kind !== "generated" || mk.nums.join() !== "1,2,3" || !mk.units.every(u => /^CM1-/.test(u)) || !mk.scores.every(x => x === 8) || mk.images !== 3 || mk.cards !== 3)
+    fails.push("문제 만들기 탭: " + JSON.stringify(mk));
+  await page.screenshot({path: `${OUT}/${MODE}-11-make.png`, fullPage: true});
+  // 문제 저장소에서 삭제: 카드 ✕(확인 창) → 보이는 문항 삭제 → 출처 삭제
+  await page.click("nav.tabs button[data-tab=library]");
+  const genEx = await page.evaluate(() => [...state.exams.values()].find(e => e.title === "테스트 생성").id);
+  await page.selectOption("#f-exam", genEx); await page.waitForTimeout(300);
+  const cnt = () => page.evaluate(id => [...state.problems.values()].filter(p => p.examId === id).length, genEx);
+  await page.locator("#grid .card .x").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
+  const afterOne = await cnt();
+  await page.click("#btn-del-shown"); await page.click("#confirm-yes"); await page.waitForTimeout(400);
+  const afterShown = await cnt();
+  const delExamShown = await page.locator("#btn-del-exam").isVisible();
+  await page.click("#btn-del-exam"); await page.click("#confirm-yes"); await page.waitForTimeout(400);
+  const examGone = await page.evaluate(id => !state.exams.has(id), genEx);
+  console.log("delete:", afterOne, afterShown, delExamShown, examGone);
+  if (afterOne !== 2 || afterShown !== 0 || !delExamShown || !examGone) fails.push("저장소 삭제");
+
   await page.setViewportSize({width: 400, height: 820});
   await page.click("nav.tabs button[data-tab=library]");
   console.log("phone scrollWidth:", await page.evaluate(() => document.documentElement.scrollWidth));
