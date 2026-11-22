@@ -18,7 +18,7 @@ function local(url) {
 }
 // 가짜 AI: 지시문 내용으로 어떤 작업인지 구분해 그럴듯한 JSON 을 돌려준다
 const units = ["CM1-2-2", "CM2-1-3", "ALG-1-1", "CM1-2-3"];
-let nClass = 0;
+let nClass = 0, anchored = 0;
 function answerFor(prompt) {
   if (prompt.includes("연결 확인")) return {ok: true};
   if (prompt.includes("검토자")) {
@@ -35,8 +35,10 @@ function answerFor(prompt) {
       shared_concepts: ["원주각"], relation_to_original: "직각 조건을 원으로 바꿔 본다", unit_id: "CM2-1-3", difficulty: 3}]};
   if (prompt.includes("수능 수학 전문가")) return {answer: prompt.includes("13번") ? "4" : "3", key_idea: "밑변이 고정이면 높이가 최대일 때 넓이가 최대이다.",
     steps: ["$A(6,0)$ 이므로 밑변 $\\overline{OA}=6$ 이다.", "높이는 점 P 의 $y$좌표 $-t(t-6)$ 이다.", "$-t(t-6)=-(t-3)^2+9$ 이므로 $t=3$ 일 때 최대 $9$ 이다."], confidence: "high"};
-  const n = Math.max(1, (prompt.match(/이미지 \d+:/g) || []).length);
-  return {items: Array.from({length: n}, (_, i) => ({index: i + 1, transcription: "함수 $y=-x(x-6)$ 의 그래프 ...", figure_description: "", question_type: "5지선다",
+  const nums = [...prompt.matchAll(/이미지 \d+: .*? (\d+)번/g)].map(m => +m[1]);
+  const n = Math.max(1, nums.length);
+  if (prompt.includes("이미 저장된 문항들의 난이도다")) anchored++;
+  return {items: Array.from({length: n}, (_, i) => ({index: i + 1, points: (nums[i] || 1) > 20 ? 4 : (nums[i] || 1) > 8 ? 3 : 2, difficulty_score: Math.min(10, 1 + ((nums[i] || 1) * 7) % 10), transcription: "함수 $y=-x(x-6)$ 의 그래프 ...", figure_description: "", question_type: "5지선다",
     primary_unit_id: units[(nClass++) % units.length], secondary_unit_ids: ["CM2-1-1"], key_concepts: ["이차함수의 최대·최소", "삼각형의 넓이"],
     solution_approach: "밑변을 고정하고 높이를 이차함수로 나타내 꼭짓점에서 최댓값을 찾는다.", answer: "3",
     solution_steps: ["점 A 의 좌표를 구한다: $A(6,0)$.", "넓이 $S=\\frac12\\cdot 6\\cdot y_P$ 이다.", "$y_P$ 의 최댓값은 꼭짓점의 $y$좌표 $9$ 이다."], difficulty: 3}))};
@@ -172,6 +174,26 @@ const sse = obj => {
   await page.click("#t-xlsx"); await page.waitForTimeout(800);
   await page.click("#btn-zip").catch(() => {});
   await page.click("nav.tabs button[data-tab=library]"); await page.click("#btn-zip"); await page.waitForTimeout(1500);
+
+  // 같은 시험지 다시 넣기: 교체 + 이어받기
+  const before = await page.evaluate(() => [...state.problems.values()].filter(p => p.number === 11).map(p => [p.officialAnswer, (p.generated || []).length])[0]);
+  await page.click("nav.tabs button[data-tab=ingest]");
+  await page.setInputFiles("#file", PDF);
+  await page.waitForSelector("#dup[open]");
+  console.log("dup:", await page.textContent("#dup-msg"));
+  await page.click("#dup-replace");
+  await page.waitForFunction(() => /완료|모두 처리/.test(document.querySelector(".status")?.textContent || ""), null, {timeout: 60000});
+  console.log("replace:", (await page.textContent(".log")).split("\n").find(l => l.includes("교체")));
+  const after = await page.evaluate(() => [...state.problems.values()].filter(p => p.number === 11).map(p => [p.officialAnswer, (p.generated || []).length])[0]);
+  console.log("problems:", await page.evaluate(() => state.problems.size), "exams:", await page.evaluate(() => state.exams.size), "#11 before/after:", JSON.stringify(before), JSON.stringify(after));
+  // 10문항 이상: 상대 난이도
+  await page.setInputFiles("#file", path.join(path.dirname(PDF), "sample.pdf"));
+  await page.waitForFunction(() => /단원 분류·풀이 완료|완료 \(/.test(document.querySelector(".status")?.textContent || ""), null, {timeout: 60000});
+  const levels = await page.evaluate(() => { const c = {}; for (const p of state.problems.values()) { const l = diffLevel(p); c[l] = (c[l] || 0) + 1; } return c; });
+  console.log("relative levels:", JSON.stringify(levels), "anchored classify calls:", anchored);
+  await page.click("nav.tabs button[data-tab=library]"); await page.locator("#grid .card").last().click(); await page.locator("#detail .seg button[data-t=analysis]").click();
+  console.log("analysis:", (await page.locator("#detail .kv dd").nth(1).textContent()).replace(/\s+/g, " ").trim());
+  await page.screenshot({path: `${OUT}/${MODE}-9-difficulty.png`}); await page.click("#detail .close");
 
   if (MODE === "standalone") {
     await page.click("nav.tabs button[data-tab=settings]");

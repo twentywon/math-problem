@@ -299,6 +299,7 @@ const PLATFORM = (() => {
       return true;
     },
     folderSave: window.showDirectoryPicker ? folderSave : null,
+    folderWatch: !!window.showDirectoryPicker,
     settings: {label: "설정", render: renderSettingsForm},
   };
 })();

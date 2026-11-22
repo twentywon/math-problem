@@ -249,6 +249,9 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
       </select>
       <label><input id="auto-classify" type="checkbox" checked> 자른 뒤 바로 단원 분류·풀이</label>
       <label><input id="auto-solve" type="checkbox"> 한 번 더 따로 풀어 정답 교차 확인</label>
+      <span class="spacer"></span>
+      <button class="btn" id="btn-watch" hidden title="폴더 안의 PDF 를 자동으로 처리하고 done 폴더로 옮깁니다">PDF 폴더 연결</button>
+      <span id="watch-status" class="muted" role="status"></span>
     </div>
     <p id="ingest-note" class="notice" hidden></p>
     <div id="jobs"></div>
@@ -324,6 +327,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
       <h2 style="font-size:18px;margin-bottom:6px">데이터</h2>
       <p id="store-desc" class="muted"></p>
       <p id="store-stats"></p>
+      <p id="diff-desc" class="muted"></p>
       <button class="btn danger" id="btn-wipe">모든 데이터 삭제</button>
     </div>
   </section>
@@ -333,6 +337,10 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 <dialog id="zoom" style="width:auto"><img id="zoom-img" alt="페이지 확대"></dialog>
 <dialog id="confirm" style="width:auto"><div class="confirm-box"><p id="confirm-msg" style="margin:0"></p>
   <div class="row" style="justify-content:flex-end"><button class="btn" id="confirm-no">취소</button><button class="btn primary" id="confirm-yes">확인</button></div></div></dialog>
+<dialog id="dup" style="width:auto"><div class="confirm-box" style="max-width:480px"><p id="dup-msg" style="margin:0"></p>
+  <label><input type="checkbox" id="dup-inherit" checked> 같은 번호 문항의 분류·풀이·실제 정답·만든 문제를 이어받기</label>
+  <p class="muted" style="margin:0">교체하면 새로 자른 문항으로 바뀌고, 이어받지 않은 문항만 다시 분류합니다.</p>
+  <div class="row" style="justify-content:flex-end"><button class="btn" id="dup-cancel">취소</button><button class="btn" id="dup-keep">둘 다 보관</button><button class="btn primary" id="dup-replace">새로 잘라 교체</button></div></div></dialog>
 <div id="toast" hidden role="status"></div>
 
 <script>
@@ -637,6 +645,7 @@ const PLATFORM = (() => {
       return true;
     },
     folderSave: window.showDirectoryPicker ? folderSave : null,
+    folderWatch: !!window.showDirectoryPicker,
     settings: {label: "설정", render: renderSettingsForm},
   };
 })();
@@ -709,7 +718,7 @@ async function saveFile(name, data) {
 }
 
 /* ---------- 상태 ---------- */
-const state = {exams: new Map(), problems: new Map(), filter: {unit: null}, sort: {key: "", dir: 1}, selected: new Set(), ready: false};
+const state = {exams: new Map(), problems: new Map(), filter: {unit: null}, sort: {key: "", dir: 1}, selected: new Set(), ready: false, rev: 0};
 const blobCache = new Map(); // 문항 id → PNG Blob
 const aiOK = () => PLATFORM.ai.ready();
 const canEdit = () => !PLATFORM.store.readOnly;
@@ -729,6 +738,10 @@ async function problemBlob(p) {
   blobCache.set(p.id, b); return b;
 }
 const ask = o => PLATFORM.ai.ask(o);
+// 문항을 바꿀 때는 이 함수들을 거친다 (상대 난이도를 다시 계산하도록 표시)
+const saveProblem = p => { state.rev++; return PLATFORM.store.putProblem(p); };
+const removeProblem = p => { state.rev++; return PLATFORM.store.deleteProblem(p); };
+const removeExam = id => { state.rev++; return PLATFORM.store.deleteExam(id); };
 const schemaInstruction = schema => `\n\n[출력 형식]\n다른 설명 없이 아래 JSON 스키마를 만족하는 JSON 객체 하나만 출력하라.\n${JSON.stringify(schema)}`;
 function parseLooseJSON(text) {
   const t = str(text).trim();
@@ -1097,7 +1110,9 @@ const CLASSIFY_SYSTEM = `너는 한국 고등학교 수학 교사이자 2022 개
    경우의 수 기초는 공통수학1, 중복조합·이항정리는 확률과 통계, 행렬은 공통수학1).
 3. key_concepts: 핵심 개념 배열. solution_approach: 어떤 관찰에서 어떤 도구로 넘어가는지 드러나는 핵심 접근법 2~4문장.
 4. 직접 끝까지 풀어 answer(5지선다면 번호 1~5만, 단답형이면 값만; 이미지가 잘려 풀 수 없으면 빈 문자열)와 solution_steps(풀이 단계 배열)를 쓴다. ${STEPS_RULE}
-5. question_type: "5지선다", "단답형", "서술형" 중 하나. difficulty: 1(기본)~5(최고난도) 정수.
+5. question_type: "5지선다", "단답형", "서술형" 중 하나. points: 문제에 적힌 배점(2, 3, 4 등), 없으면 0.
+6. difficulty_score: 1(가장 쉬움)~10(가장 어려움) 정수. 함께 보내는 [기준 문항]이 있으면 그 문항들과 비교해 같은 척도로 매긴다.
+   풀이 단계 수, 필요한 개념의 개수와 깊이, 계산량, 발상의 어려움을 함께 본다.
 
 단원표 (코드: 과목 > 대단원 > 중단원)
 ${curriculumText()}`;
@@ -1105,12 +1120,13 @@ const UNIT_ENUM = {type: "string", enum: UNIT_IDS};
 const STR_ARR = {type: "array", items: {type: "string"}};
 const CLASSIFY_SCHEMA = {type: "object", additionalProperties: false, required: ["items"], properties: {items: {type: "array", items: {
   type: "object", additionalProperties: false,
-  required: ["index", "transcription", "figure_description", "question_type", "primary_unit_id", "secondary_unit_ids", "key_concepts", "solution_approach", "answer", "solution_steps", "difficulty"],
+  required: ["index", "transcription", "figure_description", "question_type", "primary_unit_id", "secondary_unit_ids", "key_concepts", "solution_approach", "answer", "solution_steps", "points", "difficulty_score"],
   properties: {
     index: {type: "integer"}, transcription: {type: "string"}, figure_description: {type: "string"},
     question_type: {type: "string", enum: ["5지선다", "단답형", "서술형"]},
     primary_unit_id: UNIT_ENUM, secondary_unit_ids: {type: "array", items: UNIT_ENUM},
-    key_concepts: STR_ARR, solution_approach: {type: "string"}, answer: {type: "string"}, solution_steps: STR_ARR, difficulty: {type: "integer"},
+    key_concepts: STR_ARR, solution_approach: {type: "string"}, answer: {type: "string"}, solution_steps: STR_ARR,
+    points: {type: "integer"}, difficulty_score: {type: "integer"},
   }}}}};
 function cleanClassification(r) {
   const unit = str(r?.primary_unit_id).trim();
@@ -1120,14 +1136,63 @@ function cleanClassification(r) {
     question_type: ["5지선다", "단답형", "서술형"].includes(r.question_type) ? r.question_type : "단답형",
     primary_unit_id: unit, secondary_unit_ids: strArr(r.secondary_unit_ids).filter(u => UNITS[u] && u !== unit),
     key_concepts: strArr(r.key_concepts), solution_approach: str(r.solution_approach),
-    answer: str(r.answer).trim(), solution_steps: strArr(r.solution_steps).length ? strArr(r.solution_steps) : splitSteps(r.solution), difficulty: clampDiff(r.difficulty),
+    answer: str(r.answer).trim(), solution_steps: strArr(r.solution_steps).length ? strArr(r.solution_steps) : splitSteps(r.solution),
+    points: [2, 3, 4, 5, 6].includes(Number(r.points)) ? Number(r.points) : 0,
+    difficulty_score: Math.min(10, Math.max(1, Math.round(Number(r.difficulty_score) || (Number(r.difficulty) || 3) * 2))),
   };
+}
+/* ---------- 상대 난이도 ----------
+   AI 점수(1~10, 저장된 기준 문항과 비교해 매김) + 배점 + 시험 안 번호 위치로 점수를 내고,
+   분류된 전체 문항 중 순위로 1~5 를 정한다 (하위 20% = 1 … 상위 20% = 5). 문항이 10개 미만이면 AI 점수를 그대로 쓴다. */
+const DIFF_NAMES = ["", "매우 쉬움", "쉬움", "보통", "어려움", "매우 어려움"];
+const aiScore = p => { const c = p.classification; if (!c) return null; return Number.isFinite(c.difficulty_score) ? c.difficulty_score : (Number(c.difficulty) || 3) * 2; };
+function pointsOf(p) {
+  const c = p.classification || {};
+  if (c.points >= 2) return c.points;
+  const m = /\[\s*(\d)\s*점\s*\]/.exec(c.transcription || "");
+  return m ? +m[1] : 0;
+}
+const diffCache = {map: null, rev: -1, info: new Map()};
+function diffInfo(p) {
+  if (diffCache.map !== state.problems || diffCache.rev !== state.rev) {
+    diffCache.map = state.problems; diffCache.rev = state.rev; diffCache.info = new Map();
+    const all = [...state.problems.values()], ps = all.filter(x => x.classification);
+    const maxNo = new Map();
+    for (const x of all) { const k = `${x.examId}/${x.section || 0}`; maxNo.set(k, Math.max(maxNo.get(k) || 1, x.number)); }
+    const scored = ps.map(x => {
+      const s = (aiScore(x) - 1) / 9, pt = pointsOf(x), m = maxNo.get(`${x.examId}/${x.section || 0}`) || 1;
+      const ptN = pt ? Math.min(1, Math.max(0, (pt - 2) / 2)) : s, pos = m > 1 ? (x.number - 1) / (m - 1) : s;
+      return {id: x.id, v: 0.6 * s + 0.25 * ptN + 0.15 * pos, raw: aiScore(x), pt};
+    }).sort((a, b) => a.v - b.v);
+    const n = scored.length;
+    scored.forEach((r, i) => {
+      let j = i; while (j + 1 < n && scored[j + 1].v === r.v) j++; // 같은 점수는 같은 순위
+      const pct = n > 1 ? ((i + j) / 2) / (n - 1) : 0.5;
+      const level = n >= 10 ? 1 + Math.min(4, Math.floor(pct * 5)) : Math.min(5, Math.max(1, Math.ceil(r.raw / 2)));
+      diffCache.info.set(r.id, {level, top: Math.max(1, Math.round((1 - pct) * 100)), raw: r.raw, points: r.pt, n, relative: n >= 10});
+    });
+  }
+  return diffCache.info.get(p.id) || null;
+}
+const diffLevel = p => diffInfo(p)?.level || 0;
+// 분류할 때 함께 보내는 기준 문항: 상대 난이도 1~5 에서 두 개씩
+function anchorText(exclude) {
+  const ps = [...state.problems.values()].filter(p => p.classification && !exclude.has(p.id) && p.classification.transcription);
+  if (ps.length < 5) return "";
+  const pick = [];
+  for (let lv = 1; lv <= 5; lv++) {
+    const group = ps.filter(p => diffLevel(p) === lv).sort((a, b) => (a.id < b.id ? -1 : 1));
+    pick.push(...group.filter((_, i) => i % Math.max(1, Math.floor(group.length / 2)) === 0).slice(0, 2));
+  }
+  if (!pick.length) return "";
+  return "\n\n[기준 문항] 이미 저장된 문항들의 난이도다. 새 문항의 difficulty_score 는 이 문항들과 비교해 같은 척도로 매겨라.\n" +
+    pick.map(p => `- AI 점수 ${aiScore(p)}/10 (상대 난이도 ${diffLevel(p)}/5, 배점 ${pointsOf(p) || "?"}점) ${p.examTitle} ${p.number}번: ${p.classification.transcription.replace(/\s+/g, " ").slice(0, 140)}`).join("\n");
 }
 async function classifyBatch(ps) {
   const images = await Promise.all(ps.map(problemBlob));
   const list = ps.map((p, i) => `이미지 ${i + 1}: ${p.examTitle} ${p.number}번${p.shared ? ` (공통 자료 [${p.shared}] 사용)` : ""}`).join("\n");
   const data = await ask({system: CLASSIFY_SYSTEM, schema: CLASSIFY_SCHEMA, effort: "high", images,
-    text: `이번에 보내는 이미지는 ${ps.length}장이며 순서대로 다음 문항이다.\n${list}\n\n이미지 순서대로 문항마다 객체 하나씩 items 배열에 담아 답하라. index 는 이미지 번호다.`});
+    text: `이번에 보내는 이미지는 ${ps.length}장이며 순서대로 다음 문항이다.\n${list}\n\n이미지 순서대로 문항마다 객체 하나씩 items 배열에 담아 답하라. index 는 이미지 번호다.${anchorText(new Set(ps.map(p => p.id)))}`});
   const arr = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : null;
   if (!arr) throw new Error("AI 응답 형식이 맞지 않았습니다. 다시 시도하세요.");
   return ps.map((p, i) => {
@@ -1146,7 +1211,7 @@ async function classifyMany(ids, onProgress) {
       for (const [p, r] of await classifyBatch(batch)) {
         if (r instanceof Error) { errors.push(`${p.number}번: ${r.message}`); continue; }
         const cur = {...(state.problems.get(p.id) || p), classification: r, unitId: r.primary_unit_id, unitManual: false};
-        await PLATFORM.store.putProblem(cur);
+        await saveProblem(cur);
         onProgress?.(done, todo.length, cur);
       }
     } catch (e) { errors.push(`${batch.map(p => p.number + "번").join(", ")}: ${e.message}`); }
@@ -1172,7 +1237,7 @@ async function solveProblem(id) {
   const solve = {answer: str(r?.answer).trim(), key_idea: str(r?.key_idea), steps,
     confidence: ["high", "medium", "low"].includes(r?.confidence) ? r.confidence : "medium", by: PLATFORM.ai.label(), at: new Date().toISOString()};
   const cur = {...state.problems.get(id), solve};
-  await PLATFORM.store.putProblem(cur);
+  await saveProblem(cur);
   return cur;
 }
 
@@ -1191,6 +1256,7 @@ const GEN_SYSTEM = `너는 한국 수능·모의고사 출제 경험이 많은 �
 - 다 만든 뒤 스스로 끝까지 풀어 정답과 solution_steps(풀이 단계 배열)를 확인하고, 계산이 맞지 않으면 문제를 고친다. ${STEPS_RULE}
 - relation_to_original: 원본과 무엇이 같고 무엇이 다른지, 어떤 개념·접근법을 공유하는지.
 - unit_id: 아래 단원표 코드 중 새 문제가 주로 다루는 중단원.
+- difficulty: 원본의 '상대 난이도'(1~5)를 기준으로 새 문제의 난이도를 1~5 정수로 매긴다. 유사문제는 원본과 같게, 추가 요청이 있으면 그에 맞춘다.
 문제 유형
 ${Object.entries(KINDS).map(([k, v]) => `- ${k}: ${v}`).join("\n")}
 
@@ -1249,7 +1315,7 @@ function originalText(p) {
   return [`[원본 문제] ${p.examTitle} ${p.number}번${p.shared ? ` (공통 자료 [${p.shared}] 사용)` : ""}`, `단원: ${UNITS[p.unitId]?.label || ""}`,
     `문제 텍스트:\n${c.transcription || ""}`, `그림 설명: ${c.figure_description || "없음"}`,
     `핵심 개념: ${(c.key_concepts || []).join(", ")}`, `핵심 접근법: ${c.solution_approach || ""}`,
-    `정답: ${aiAnswer(p)}`, `풀이:\n${(steps || []).map((s, i) => `${i + 1}. ${s}`).join("\n")}`].join("\n");
+    `상대 난이도: ${diffLevel(p) || "?"}/5`, `정답: ${aiAnswer(p)}`, `풀이:\n${(steps || []).map((s, i) => `${i + 1}. ${s}`).join("\n")}`].join("\n");
 }
 function cleanGenerated(q) {
   const statement = str(q?.statement);
@@ -1288,7 +1354,7 @@ async function generateFor(id, counts, extra, verify, log = () => {}) {
     } catch (e) { made.forEach(q => { q.verification = {passed: false, error: e.message}; }); }
   }
   const cur = state.problems.get(id);
-  await PLATFORM.store.putProblem({...cur, generated: [...(cur.generated || []), ...made]});
+  await saveProblem({...cur, generated: [...(cur.generated || []), ...made]});
   return made;
 }
 
@@ -1349,6 +1415,7 @@ function updateStatus() {
   $("#btn-zip").hidden = $("#t-xlsx").hidden = $("#t-csv").hidden = !PLATFORM.canSave();
   $("#btn-import").hidden = !canEdit();
   $("#btn-folder").hidden = !PLATFORM.folderSave;
+  $("#btn-watch").hidden = !PLATFORM.folderWatch || !canEdit();
 }
 function onStoreChange() {
   updateStatus(); refreshJobs();
@@ -1371,12 +1438,82 @@ async function handleFiles(files) {
   for (const f of files.filter(f => /\.pdf$/i.test(f.name) || f.type === "application/pdf")) await ingestFile(f);
 }
 const jobRenderers = new Set();
+
+/* ---------- PDF 폴더 감시 (Python 버전의 inbox 와 같은 기능, 크롬·엣지 다운로드 버전) ----------
+   연결한 폴더의 PDF 를 차례로 처리하고 하위 폴더 done 으로 옮긴다. 같은 시험지는 이어받아 교체한다. */
+const watch = {dir: null, timer: null, busy: false, failed: new Map()};
+$("#btn-watch").onclick = async () => {
+  if (watch.dir) {
+    clearInterval(watch.timer); watch.dir = null;
+    $("#btn-watch").textContent = "PDF 폴더 연결"; $("#watch-status").textContent = ""; return;
+  }
+  try { watch.dir = await window.showDirectoryPicker({mode: "readwrite"}); } catch (e) { return; }
+  $("#btn-watch").textContent = "폴더 감시 끄기";
+  scanFolder(); watch.timer = setInterval(scanFolder, 10000);
+};
+async function scanFolder() {
+  if (watch.busy || !watch.dir || !state.ready) return;
+  watch.busy = true;
+  try {
+    const files = [];
+    for await (const [name, h] of watch.dir.entries()) if (h.kind === "file" && /\.pdf$/i.test(name)) files.push(h);
+    const todo = [];
+    for (const h of files) { const f = await h.getFile(); if (watch.failed.get(f.name) !== f.lastModified) todo.push(f); }
+    $("#watch-status").textContent = `'${watch.dir.name}' 폴더 감시 중 · 새 PDF ${todo.length}개${watch.failed.size ? ` · 실패 ${watch.failed.size}개 (파일을 고치면 다시 시도)` : ""}`;
+    for (const f of todo) {
+      if (!watch.dir) break;
+      if (await ingestFile(f, {auto: true})) {
+        const done = await watch.dir.getDirectoryHandle("done", {create: true});
+        const w = await (await done.getFileHandle(f.name, {create: true})).createWritable(); await w.write(f); await w.close();
+        await watch.dir.removeEntry(f.name);
+        watch.failed.delete(f.name);
+      } else watch.failed.set(f.name, f.lastModified);
+    }
+    if (watch.dir && todo.length) $("#watch-status").textContent = `'${watch.dir.name}' 폴더 감시 중 · 처리한 PDF 는 done 폴더로 옮겼습니다`;
+  } catch (e) { $("#watch-status").textContent = "폴더를 읽지 못했습니다: " + e.message; }
+  watch.busy = false;
+}
 function refreshJobs() { for (const r of jobRenderers) r(); }
 
-async function ingestFile(file) {
+/* ---------- 같은 시험지 다시 넣기 ---------- */
+async function fileHash(buf) {
+  try { const h = await crypto.subtle.digest("SHA-256", buf); return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join(""); }
+  catch (e) { return ""; }
+}
+// 같은 파일(내용이 같음) 또는 같은 파일 이름의 시험을 찾는다 (Python 버전은 파일 이름으로 교체)
+function findDuplicate(hash, name) {
+  const exams = [...state.exams.values()];
+  const byHash = hash && exams.find(e => e.fileHash === hash);
+  return byHash ? {exam: byHash, sameFile: true} : (exams.find(e => e.fileName === name) ? {exam: exams.find(e => e.fileName === name), sameFile: false} : null);
+}
+function askDuplicate(exam, count, sameFile) {
+  return new Promise(res => {
+    const d = $("#dup");
+    $("#dup-msg").textContent = `'${exam.title}' 시험이 이미 저장되어 있습니다 (문항 ${count}개, ${sameFile ? "내용이 같은 파일" : "파일 이름이 같음"}). 어떻게 할까요?`;
+    $("#dup-inherit").checked = true;
+    const done = v => { d.close(); res({action: v, inherit: $("#dup-inherit").checked}); };
+    $("#dup-replace").onclick = () => done("replace"); $("#dup-keep").onclick = () => done("keep"); $("#dup-cancel").onclick = () => done("cancel");
+    d.oncancel = () => res({action: "cancel"});
+    d.showModal();
+  });
+}
+const CARRY = ["classification", "unitId", "unitManual", "solve", "officialAnswer", "generated"];
+
+// auto: 폴더 감시처럼 묻지 않고 처리 (같은 시험지는 이어받아 교체). 성공하면 true
+async function ingestFile(file, {auto = false} = {}) {
+  const buf = await file.arrayBuffer(), hash = await fileHash(buf.slice(0));
+  const dup = findDuplicate(hash, file.name);
+  let replace = null, inherit = true;
+  if (dup) {
+    const count = [...state.problems.values()].filter(p => p.examId === dup.exam.id).length;
+    const ans = auto ? {action: "replace", inherit: true} : await askDuplicate(dup.exam, count, dup.sameFile);
+    if (ans.action === "cancel") { toast("넣지 않았습니다"); return false; }
+    if (ans.action === "replace") { replace = dup.exam; inherit = ans.inherit; }
+  }
   $("#ingest-empty").hidden = true;
-  const stem = file.name.replace(/\.pdf$/i, "");
-  const examId = newId("e");
+  const stem = replace ? replace.title : dup ? `${file.name.replace(/\.pdf$/i, "")} (2)` : file.name.replace(/\.pdf$/i, "");
+  const examId = replace ? replace.id : newId("e");
+  let ok = false;
   const job = document.createElement("div");
   job.className = "panel";
   job.innerHTML = `
@@ -1415,7 +1552,7 @@ async function ingestFile(file) {
       status(`단원 분류·풀이 중… 0/${todo.length}`, 30);
       errors.push(...await classifyMany(todo, (n, total, p) => {
         status(`단원 분류·풀이 중… ${n}/${total}`, 30 + 50 * n / total);
-        if (p?.unitId) log(`${p.number}번 → ${UNITS[p.unitId].label} · 난이도 ${p.classification.difficulty} · AI 정답 ${p.classification.answer || "?"}`);
+        if (p?.unitId) log(`${p.number}번 → ${UNITS[p.unitId].label} · AI 난이도 점수 ${aiScore(p)}/10 · AI 정답 ${p.classification.answer || "?"}`);
         renderCrops();
       }));
     }
@@ -1437,18 +1574,33 @@ async function ingestFile(file) {
     const mode = $("#split-mode").value;
     if (mode === "vision" && !aiOK()) throw new Error("AI 이미지 인식을 쓸 수 없습니다. 자르기 방식을 '자동'으로 바꾸세요.");
     status("PDF 분석 중…", 5);
-    const {crops, checks, pages, groups} = await splitPdf(await file.arrayBuffer(), mode, log);
+    const {crops, checks, pages, groups} = await splitPdf(buf, mode, log);
     if (!crops.length) throw new Error("문항 번호를 찾지 못했습니다. 스캔본이라면 자르기 방식을 'AI 이미지 인식'으로 바꿔 다시 넣으세요.");
     const title = q(".title").value.trim() || stem;
+    // 교체: 새로 자르기에 성공한 뒤에 예전 문항을 지운다. 같은 번호(구간) 문항의 작업 내용은 이어받는다
+    const carry = new Map();
+    if (replace) {
+      status("예전 문항 정리 중…", 15);
+      for (const p of [...state.problems.values()].filter(p => p.examId === examId)) {
+        carry.set(`${p.section || 0}-${p.number}`, p);
+        await removeProblem(p);
+      }
+    }
     status("문항 이미지 저장 중…", 20);
-    await PLATFORM.store.putExam({id: examId, title, fileName: file.name, pages, addedAt: new Date().toISOString()});
+    await PLATFORM.store.putExam({...(replace || {}), id: examId, title, fileName: file.name, fileHash: hash, pages,
+      addedAt: replace?.addedAt || new Date().toISOString(), ...(replace ? {replacedAt: new Date().toISOString()} : {})});
+    let inherited = 0;
     for (const c of crops) {
       const id = `${examId}-q${pad2(c.order)}`;
       blobCache.set(id, c.blob);
       const img = await PLATFORM.store.saveImage(id, c.blob);
-      await PLATFORM.store.putProblem({id, examId, examTitle: title, order: c.order, number: c.number, section: c.section, page: c.page + 1,
-        ...img, shared: c.shared || null, classification: null, unitId: null, solve: null, officialAnswer: "", generated: []});
+      const rec = {id, examId, examTitle: title, order: c.order, number: c.number, section: c.section, page: c.page + 1,
+        ...img, shared: c.shared || null, classification: null, unitId: null, solve: null, officialAnswer: "", generated: []};
+      const old = inherit ? carry.get(`${c.section || 0}-${c.number}`) : null;
+      if (old) { for (const k of CARRY) if (old[k] !== undefined) rec[k] = old[k]; inherited++; }
+      await saveProblem(rec);
     }
+    if (replace) log(`예전 ${carry.size}문항을 새로 자른 ${crops.length}문항으로 교체했습니다.${inherit ? ` 같은 번호 ${inherited}문항의 분류·풀이·실제 정답·만든 문제를 이어받았습니다.` : ""}`);
     const gaps = [];
     for (let i = 1; i < crops.length; i++) { const a = crops[i - 1], b = crops[i]; if (b.section === a.section && b.number !== a.number + 1) gaps.push(`${a.number}→${b.number}`); }
     log(`문항 ${crops.length}개: ${crops.map(c => c.number).join(", ")}`);
@@ -1461,21 +1613,23 @@ async function ingestFile(file) {
     jobRenderers.add(renderCrops); renderCrops();
     if ($("#auto-classify").checked && aiOK()) await runAI();
     else status(`자르기 완료: 문항 ${crops.length}개${aiOK() ? "" : " (AI 가 없어 미분류)"}`, 100);
+    ok = true;
   } catch (e) {
     console.error(e); status("오류", 100); log("오류: " + (e?.message || e));
   }
   q(".title").onchange = async () => {
     const t = q(".title").value.trim(), exam = state.exams.get(examId); if (!t || !exam) return;
     await PLATFORM.store.putExam({...exam, title: t});
-    for (const p of mine()) await PLATFORM.store.putProblem({...p, examTitle: t});
+    for (const p of mine()) await saveProblem({...p, examTitle: t});
     toast("시험 이름을 바꿨습니다");
   };
   q(".go").onclick = () => runAI();
   q(".lib").onclick = () => { showTab("library"); $("#f-exam").value = examId; state.filter.unit = null; renderGrid(); };
   q(".del").onclick = async () => {
     if (!(await askConfirm("이 시험과 자른 문항을 모두 삭제할까요?", "삭제"))) return;
-    jobRenderers.delete(renderCrops); await PLATFORM.store.deleteExam(examId); job.remove(); toast("삭제했습니다");
+    jobRenderers.delete(renderCrops); await removeExam(examId); job.remove(); toast("삭제했습니다");
   };
+  return ok;
 }
 $("#zoom").onclick = () => $("#zoom").close();
 
@@ -1492,7 +1646,7 @@ function cardHTML(p, {deletable = false} = {}) {
     <img class="thumb" src="${esc(p.image)}" loading="lazy" alt="">
     <div class="card-foot">
       <span class="unit">${p.unitId ? esc(UNITS[p.unitId].section) : "미분류"}</span>
-      ${c ? `<span class="dots" title="난이도 ${c.difficulty}">${dots(c.difficulty)}</span>` : ""}
+      ${c ? `<span class="dots" title="상대 난이도 ${diffLevel(p)}/5 (${DIFF_NAMES[diffLevel(p)]})">${dots(diffLevel(p))}</span>` : ""}
     </div>
     <div class="card-foot">
       ${ans ? `<span class="ans-mini" title="AI 정답">정답 ${esc(ansText)}</span>` : ""}
@@ -1509,7 +1663,7 @@ function bindCards(root, ids) {
     const x = card.querySelector(".x");
     if (x) x.onclick = async ev => {
       ev.stopPropagation();
-      const p = state.problems.get(id); if (p) { await PLATFORM.store.deleteProblem(p); onStoreChange(); }
+      const p = state.problems.get(id); if (p) { await removeProblem(p); onStoreChange(); }
     };
   });
 }
@@ -1527,7 +1681,7 @@ function filteredProblems(ignoreUnit = false) {
   const text = $("#q").value.trim().toLowerCase(), exam = $("#f-exam").value, diff = $("#f-diff").value;
   return [...state.problems.values()].filter(p => {
     if (exam && p.examId !== exam) return false;
-    if (diff && String(p.classification?.difficulty) !== diff) return false;
+    if (diff && String(diffLevel(p)) !== diff) return false;
     if (!ignoreUnit && state.filter.unit) {
       const f = state.filter.unit;
       if (f === "_none") { if (p.unitId) return false; }
@@ -1608,7 +1762,9 @@ const COLS = [
   {k: "chapter", t: "대단원", v: p => UNITS[p.unitId]?.chapter || ""},
   {k: "section", t: "중단원", v: p => UNITS[p.unitId]?.section || ""},
   {k: "type", t: "유형", v: p => p.classification?.question_type || ""},
-  {k: "diff", t: "난이도", v: p => p.classification?.difficulty || "", num: true},
+  {k: "diff", t: "난이도", v: p => diffLevel(p) || "", num: true},
+  {k: "score", t: "AI 점수", v: p => aiScore(p) ?? "", num: true},
+  {k: "points", t: "배점", v: p => pointsOf(p) || "", num: true},
   {k: "ai", t: "AI 정답", v: ansCell, ans: true},
   {k: "cross", t: "교차 확인", v: crossCheck},
   {k: "official", t: "실제 정답", v: p => str(p.officialAnswer)},
@@ -1672,7 +1828,7 @@ function renderTable(refreshOptions = false) {
     const id = tr.dataset.id;
     tr.querySelector(".sel").onchange = e => { e.target.checked ? state.selected.add(id) : state.selected.delete(id); selText(); };
     tr.querySelector(".open").onclick = () => openDetail(id, ids);
-    tr.querySelector(".off").onchange = async e => { const p = state.problems.get(id); if (p) { await PLATFORM.store.putProblem({...p, officialAnswer: e.target.value.trim()}); renderTable(); } };
+    tr.querySelector(".off").onchange = async e => { const p = state.problems.get(id); if (p) { await saveProblem({...p, officialAnswer: e.target.value.trim()}); renderTable(); } };
   });
 }
 const selectedIds = () => [...state.selected].filter(id => state.problems.has(id));
@@ -1770,7 +1926,7 @@ function renderDetail() {
       <button class="btn ghost prev" ${pos > 0 ? "" : "disabled"} aria-label="이전 문항">‹</button>
       <div class="d-title"><span class="qnum big">${p.number}</span>
         <div class="meta"><div class="exam">${esc(p.examTitle)}</div>
-          <div class="crumb">${u ? esc(u.label.replace(/ > /g, " › ")) : "미분류"}${c ? ` · ${esc(c.question_type)} · 난이도 ${dots(c.difficulty)}` : ""}${pos >= 0 ? ` · ${pos + 1}/${list.length}` : ""}</div></div></div>
+          <div class="crumb">${u ? esc(u.label.replace(/ > /g, " › ")) : "미분류"}${c ? ` · ${esc(c.question_type)} · 난이도 ${dots(diffLevel(p))}` : ""}${pos >= 0 ? ` · ${pos + 1}/${list.length}` : ""}</div></div></div>
       <button class="btn ghost next" ${pos >= 0 && pos < list.length - 1 ? "" : "disabled"} aria-label="다음 문항">›</button>
       <button class="btn close">닫기</button>
     </div>
@@ -1841,7 +1997,8 @@ function analysisTabHTML(p) {
     ${c ? `
       <dl class="kv">
         <dt>유형</dt><dd>${esc(c.question_type)}</dd>
-        <dt>난이도</dt><dd><span class="dots">${dots(c.difficulty)}</span> ${c.difficulty}/5</dd>
+        <dt>난이도</dt><dd>${(() => { const d = diffInfo(p); return `<span class="dots">${dots(d.level)}</span> ${d.level}/5 ${DIFF_NAMES[d.level]}
+          <div class="muted">${d.relative ? `분류된 ${d.n}문항 중 어려운 쪽 상위 ${d.top}%` : `분류된 문항이 ${d.n}개뿐이라 AI 점수로 매김`} · AI 점수 ${d.raw}/10${d.points ? ` · 배점 ${d.points}점` : ""}</div>`; })()}</dd>
         ${c.secondary_unit_ids?.length ? `<dt>함께 쓰이는 단원</dt><dd>${c.secondary_unit_ids.map(u => `<span class="chip">${esc(UNITS[u]?.section)}</span>`).join(" ")}</dd>` : ""}
         <dt>핵심 개념</dt><dd>${c.key_concepts.map(k => `<span class="chip red">${esc(k)}</span>`).join(" ") || "—"}</dd>
       </dl>
@@ -1903,15 +2060,15 @@ function bindDetail(p) {
   d.querySelectorAll(".seg-mini button").forEach(b => b.onclick = () => { detailState.solSource = b.dataset.src; renderDetail(); });
   d.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => {
     const v = b.dataset.pick, now = str(cur().officialAnswer);
-    await PLATFORM.store.putProblem({...cur(), officialAnswer: normalizeAnswer(now) === v ? "" : v}); renderDetail();
+    await saveProblem({...cur(), officialAnswer: normalizeAnswer(now) === v ? "" : v}); renderDetail();
   });
-  if (q(".official")) q(".official").onchange = async e => { await PLATFORM.store.putProblem({...cur(), officialAnswer: e.target.value.trim()}); renderDetail(); };
-  if (q(".unit")) q(".unit").onchange = async e => { await PLATFORM.store.putProblem({...cur(), unitId: e.target.value || null, unitManual: true}); renderDetail(); };
+  if (q(".official")) q(".official").onchange = async e => { await saveProblem({...cur(), officialAnswer: e.target.value.trim()}); renderDetail(); };
+  if (q(".unit")) q(".unit").onchange = async e => { await saveProblem({...cur(), unitId: e.target.value || null, unitManual: true}); renderDetail(); };
   if (q(".save-img")) q(".save-img").onclick = async () => saveFile(`${safeFile(p.examTitle)}_${pad2(p.number)}번.png`, await problemBlob(cur()));
   if (q(".del-p")) q(".del-p").onclick = async () => {
     if (!(await askConfirm(`${p.number}번 문항을 삭제할까요?`, "삭제"))) return;
     const list = detailState.list, pos = list.indexOf(id);
-    await PLATFORM.store.deleteProblem(cur()); detailState.list = list.filter(x => x !== id);
+    await removeProblem(cur()); detailState.list = list.filter(x => x !== id);
     const next = detailState.list[Math.min(pos, detailState.list.length - 1)];
     if (next) openDetail(next); else d.close();
     toast("삭제했습니다");
@@ -1928,7 +2085,7 @@ function bindDetail(p) {
   };
   d.querySelectorAll(".g-del").forEach(b => b.onclick = async () => {
     const i = +b.closest(".gen").dataset.i, x = cur();
-    await PLATFORM.store.putProblem({...x, generated: (x.generated || []).filter((_, k) => k !== i)}); renderDetail();
+    await saveProblem({...x, generated: (x.generated || []).filter((_, k) => k !== i)}); renderDetail();
   });
   if (q(".save-sheet")) q(".save-sheet").onclick = async () => saveFile(`${safeFile(p.examTitle)}_${pad2(p.number)}번_연계문제.html`, new Blob([await worksheetHTML(cur())], {type: "text/html"}));
 }
@@ -2001,7 +2158,7 @@ $("#import-file").onchange = async e => {
     for (const p of data.problems) {
       const blob = dataURLtoBlob(p.image); blobCache.set(p.id, blob);
       const img = await PLATFORM.store.saveImage(p.id, blob);
-      await PLATFORM.store.putProblem({...p, ...img});
+      await saveProblem({...p, ...img});
     }
     toast(`불러왔습니다: 시험 ${data.exams.length}개, 문항 ${data.problems.length}개`);
     renderLibrary();
@@ -2018,12 +2175,16 @@ function renderSettings() {
   const gen = ps.reduce((s, p) => s + (p.generated?.length || 0), 0);
   $("#store-stats").textContent = `시험 ${state.exams.size}개 · 문항 ${ps.length}개 (분류 ${ps.filter(p => p.unitId).length}개, 교차 풀이 ${ps.filter(p => p.solve).length}개) · 만든 문제 ${gen}개`;
   $("#btn-wipe").hidden = !canEdit();
+  const n = ps.filter(p => p.classification).length;
+  $("#diff-desc").textContent = n >= 10
+    ? `난이도는 분류된 ${n}문항 안에서의 상대 순위입니다 (AI 점수 60% + 배점 25% + 시험 안 번호 위치 15%를 합쳐 하위 20%는 1, 상위 20%는 5). 문항이 늘어나면 자동으로 다시 계산됩니다.`
+    : `분류된 문항이 ${n}개라 아직 AI 점수(1~10)를 그대로 1~5로 바꿔 씁니다. 10문항 이상이면 저장된 문항 안에서의 상대 순위로 매깁니다.`;
 }
 $("#btn-wipe").onclick = async () => {
   if (!(await askConfirm("저장된 모든 시험·문항·만든 문제를 삭제할까요? 되돌릴 수 없습니다.", "모두 삭제"))) return;
   const b = $("#btn-wipe"); b.disabled = true;
-  for (const id of [...state.exams.keys()]) await PLATFORM.store.deleteExam(id);
-  for (const p of [...state.problems.values()]) await PLATFORM.store.deleteProblem(p);
+  for (const id of [...state.exams.keys()]) await removeExam(id);
+  for (const p of [...state.problems.values()]) await removeProblem(p);
   b.disabled = false; $("#jobs").innerHTML = ""; jobRenderers.clear(); $("#ingest-empty").hidden = false; state.selected.clear();
   toast("모두 삭제했습니다"); onStoreChange();
 };

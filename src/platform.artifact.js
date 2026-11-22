@@ -159,6 +159,7 @@ const PLATFORM = (() => {
       catch (e) { if (e?.code === "declined") return false; throw new Error(e?.code || "오류"); }
     },
     folderSave: null,
+    folderWatch: false,
     settings: {
       label: "정보",
       render(root) {
