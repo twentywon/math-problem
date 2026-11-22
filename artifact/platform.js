@@ -49,23 +49,36 @@ const PLATFORM = (() => {
     const queue = (key, fn) => { const p = (chains.get(key) || Promise.resolve()).catch(() => {}).then(fn); chains.set(key, p); return p; };
     const plain = o => JSON.parse(JSON.stringify(o));
     const loaded = {exams: false, problems: false};
+    let unsubs = [], onChangeFn = () => {};
     return {
       kind: "cloud", readOnly: !assets,
       ready: () => loaded.exams && loaded.problems,
       describe: () => "이 아티팩트의 저장소에 보관합니다. 다른 기기에서 열어도 그대로 보이고, 아티팩트를 공유받은 사람도 볼 수 있습니다." + (assets ? "" : " 지금은 보기 전용입니다."),
       start(onChange) {
+        onChangeFn = onChange;
         const timer = setTimeout(() => { if (!this.ready()) toast("저장소에 아직 연결되지 않았습니다. 인터넷 연결을 확인하세요."); }, 10000);
-        const done = (k, snap) => { if (!snap.metadata.fromCache) loaded[k] = true; if (this.ready()) clearTimeout(timer); onChange(); };
-        db.collection("exams").onSnapshot(snap => {
-          state.exams = new Map(snap.docs.map(d => [d.id, {...d.data(), id: d.id}])); done("exams", snap);
-        }, e => { clearTimeout(timer); toast("저장소 오류: " + e.code); });
-        db.collection("made").onSnapshot(snap => { state.made = new Map(snap.docs.map(d => [d.id, {...d.data(), id: d.id}])); onChange(); }, () => {});
-        db.collection("problems").onSnapshot(snap => {
-          state.problems = new Map(snap.docs.map(d => { const v = upgradeProblem({...d.data(), id: d.id}); v.image = "/_blob/" + v.imageId; return [d.id, v]; }));
-          done("problems", snap);
-        }, e => { clearTimeout(timer); toast("저장소 오류: " + e.code); });
+        this.subscribe(() => clearTimeout(timer), () => clearTimeout(timer));
       },
-      async reload() { /* 아티팩트 저장소는 바뀔 때마다 실시간으로 받아 오므로 다시 그리기만 한다 */ },
+      // 세 모음(exams, problems, made)을 구독한다. 서버에서 받은 exams·problems 가 모두 오면 fresh() 를 한 번 부른다
+      subscribe(fresh = () => {}, fail = () => {}) {
+        const got = {exams: false, problems: false, made: false};
+        let told = false;
+        const done = (k, snap) => {
+          if (!snap.metadata.fromCache) { loaded[k] = true; got[k] = true; }
+          if (!told && got.exams && got.problems) { told = true; fresh(); }
+          onChangeFn();
+        };
+        const sub = (c, fn) => { const u = db.collection(c).onSnapshot(snap => { fn(snap); done(c, snap); }, e => { if (c !== "made") { toast("저장소 오류: " + e.code); fail(e); } }); if (typeof u === "function") unsubs.push(u); };
+        sub("exams", snap => { state.exams = new Map(snap.docs.map(d => [d.id, {...d.data(), id: d.id}])); });
+        sub("made", snap => { state.made = new Map(snap.docs.map(d => [d.id, {...d.data(), id: d.id}])); });
+        sub("problems", snap => { state.problems = new Map(snap.docs.map(d => { const v = upgradeProblem({...d.data(), id: d.id}); v.image = "/_blob/" + v.imageId; return [d.id, v]; })); });
+      },
+      // 구독을 끊고 처음부터 다시 받아 온다 (최대 10초 기다림)
+      reload() {
+        unsubs.forEach(u => { try { u(); } catch (e) { /* 이미 끊김 */ } }); unsubs = [];
+        return new Promise((res, rej) => { const tm = setTimeout(() => rej(new Error("저장소 응답이 없습니다. 인터넷 연결을 확인하세요.")), 10000);
+          this.subscribe(() => { clearTimeout(tm); res(); }, e => { clearTimeout(tm); rej(e); }); });
+      },
       async saveImage(id, blob) { const r = await assets.upload(blob); return {imageId: r.id, image: r.url}; },
       putExam(e) { state.exams.set(e.id, e); return queue("e/" + e.id, () => db.collection("exams").doc(e.id).set(plain(e))); },
       putProblem(p) {

@@ -512,10 +512,9 @@ const sse = obj => {
   console.log("delete:", before3, afterOne, afterShown, delExamShown, examGone);
   if (afterOne !== before3 - 1 || afterShown !== 0 || !delExamShown || !examGone) fails.push("저장소 삭제");
 
-  // 화면마다 새로고침
+  // 화면마다 새로고침 = 다시 조회 (저장소에서 새로 받아 오고 검색·거르기·정렬·선택을 처음 상태로)
   if (MODE === "html") {
     await page.click("nav.tabs button[data-tab=library]"); await page.waitForTimeout(200);
-    const before = await page.evaluate(() => state.problems.size);
     await page.evaluate(() => new Promise((res, rej) => { // 다른 창에서 저장한 것처럼 IndexedDB 에 직접 넣는다
       const r = indexedDB.open("mathgen", 2);
       r.onsuccess = () => { const tx = r.result.transaction("problems", "readwrite");
@@ -523,22 +522,48 @@ const sse = obj => {
         tx.oncomplete = () => { r.result.close(); res(); }; tx.onerror = () => rej(tx.error); };
       r.onerror = () => rej(r.error);
     }));
-    const notYet = await page.evaluate(() => state.problems.has("outside-q1"));
-    await page.click("#tab-library .page-refresh"); await page.waitForFunction(() => /새로고침했습니다/.test(document.querySelector("#tab-library .page-stamp").textContent));
-    const after = await page.evaluate(() => [state.problems.size, state.problems.has("outside-q1"), document.querySelector("#lib-status").textContent]);
-    console.log("refresh library:", before, notYet, JSON.stringify(after));
-    if (notYet || !after[1] || after[0] !== before + 1) fails.push("저장소 새로고침");
-    await page.evaluate(() => removeProblem(state.problems.get("outside-q1")));
+  }
+  await page.click("nav.tabs button[data-tab=library]");
+  await page.fill("#q", "없는검색어"); await page.dispatchEvent("#q", "input");
+  await page.evaluate(() => { state.open.add("CM1"); state.filter.unit = "CM1"; renderGrid(); });
+  const libBeforeQ = await page.evaluate(() => [state.problems.has("outside-q1"), document.querySelector("#lib-status").textContent]);
+  await page.click("#tab-library .page-refresh"); await page.waitForFunction(() => /다시 조회했습니다/.test(document.querySelector("#tab-library .page-stamp").textContent));
+  const libAfterQ = await page.evaluate(() => [state.problems.has("outside-q1"), document.querySelector("#q").value, state.filter.unit, state.open.size, document.querySelector("#lib-status").textContent]);
+  console.log("requery library:", JSON.stringify(libBeforeQ), "->", JSON.stringify(libAfterQ));
+  if (libAfterQ[1] !== "" || libAfterQ[2] !== null || libAfterQ[3] !== 0 || !/^전체/.test(libAfterQ[4]) || (MODE === "html" && (libBeforeQ[0] || !libAfterQ[0]))) fails.push("저장소 다시 조회");
+  if (MODE === "html") await page.evaluate(() => removeProblem(state.problems.get("outside-q1")));
+  // 문항 표: 정렬·선택·검색이 처음 상태로
+  await page.click("nav.tabs button[data-tab=table]");
+  await page.click('#sheet th[data-k="num"]'); await page.check("#t-all"); await page.fill("#t-q", "group"); await page.dispatchEvent("#t-q", "input");
+  await page.click("#tab-table .page-refresh"); await page.waitForFunction(() => /다시 조회했습니다/.test(document.querySelector("#tab-table .page-stamp").textContent));
+  const tblQ = await page.evaluate(() => [state.sort.key, state.selected.size, document.querySelector("#t-q").value]);
+  console.log("requery table:", JSON.stringify(tblQ));
+  if (tblQ.join("|") !== "|0|") fails.push("문항 표 다시 조회: " + tblQ);
+  // 설정: 저장하지 않은 입력은 버리고 저장된 값으로 (다운로드 버전)
+  if (MODE === "html") {
+    await page.click("nav.tabs button[data-tab=settings]");
+    await page.selectOption("#s-provider", "anthropic"); await page.fill("#s-key", "sk-ant-test"); await page.click("#s-save"); // 이 창에서만 쓰는 키로 연결
+    const saved = await page.inputValue("#s-provider"); const aiBefore = await page.evaluate(() => aiOK());
+    await page.selectOption("#s-provider", saved === "openai" ? "gemini" : "openai");
+    await page.click("#tab-settings .page-refresh"); await page.waitForFunction(() => /다시 조회했습니다/.test(document.querySelector("#tab-settings .page-stamp").textContent));
+    const back = await page.inputValue("#s-provider");
+    console.log("requery settings:", saved, "->", back);
+    if (back !== saved) fails.push("설정 다시 조회");
+    const aiStill = await page.evaluate(() => aiOK());
+    console.log("ai before/after settings requery:", aiBefore, aiStill);
+    if (!aiBefore || !aiStill) fails.push("설정 다시 조회 뒤 AI 연결 유지");
   }
   const stamps = [];
   for (const tab of ["ingest", "library", "table", "make", "settings"]) {
     await page.click(`nav.tabs button[data-tab=${tab}]`);
     await page.click(`#tab-${tab} .page-refresh`);
-    await page.waitForFunction(id => /새로고침했습니다/.test(document.querySelector(`#tab-${id} .page-stamp`).textContent), tab, {timeout: 5000}).catch(() => {});
-    stamps.push(/새로고침했습니다/.test(await page.textContent(`#tab-${tab} .page-stamp`)));
+    await page.waitForFunction(id => /다시 조회했습니다/.test(document.querySelector(`#tab-${id} .page-stamp`).textContent), tab, {timeout: 12000}).catch(() => {});
+    stamps.push(/다시 조회했습니다/.test(await page.textContent(`#tab-${tab} .page-stamp`)));
   }
-  console.log("refresh buttons:", JSON.stringify(stamps));
+  const jobsLeft = await page.evaluate(() => [document.querySelectorAll("#jobs > .panel").length, document.querySelector("#ingest-empty").hidden]);
+  console.log("refresh buttons:", JSON.stringify(stamps), "ingest jobs after:", JSON.stringify(jobsLeft));
   if (!stamps.every(Boolean)) fails.push("화면별 새로고침: " + stamps);
+  if (jobsLeft[0] !== 0 || jobsLeft[1]) fails.push("넣기 화면 다시 조회: " + jobsLeft);
 
   await page.setViewportSize({width: 400, height: 820});
   await page.click("nav.tabs button[data-tab=library]");
