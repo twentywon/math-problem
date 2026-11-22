@@ -136,8 +136,10 @@ def detect_columns(page: pymupdf.Page, lines: list[_Line]) -> list[Column]:
     usable = [ln for ln in lines if (ln.x1 - ln.x0) < 0.6 * W and ln.y0 > 0.1 * H and ln.y1 < 0.92 * H]
     if not usable:
         return [Column(0, W)]
-    left = min(ln.x0 for ln in usable)
-    right = max(ln.x1 for ln in usable)
+    # 본문 좌우 끝은 페이지 맨 위에 붙은 문항 번호까지 포함해 잡는다
+    body = [ln for ln in lines if (ln.x1 - ln.x0) < 0.6 * W and ln.y0 > 0.04 * H and ln.y1 < 0.95 * H] or usable
+    left = min(ln.x0 for ln in body)
+    right = max(ln.x1 for ln in body)
     lo, hi = int(W * 0.3), int(W * 0.7)
     cover: list[int] = []  # 아래 tries 에서 채운다
 
@@ -184,8 +186,18 @@ def detect_columns(page: pymupdf.Page, lines: list[_Line]) -> list[Column]:
             rx = min(rights)
             return [Column(max(0, left - 4), rx - 8), Column(rx - 4, min(W, right + 4))]
     if best[0] >= 8:
-        # 단 경계는 빈 띠의 가운데(구분선 자리)에서 3pt 떨어진 곳: 글자 폭 오차로 끝 글자가 잘리지 않게
         mid = best[1] + best[0] / 2
+        # 찾은 띠를 실제 줄 끝에 맞춘다: 오른쪽 단 줄들의 시작과, 그보다 왼쪽에서 끝나는 왼쪽 단 줄들의 끝 사이
+        starts = [ln.x0 for ln in usable if ln.x0 > mid]
+        if starts:
+            right_min = min(starts)
+            ends = [ln.x1 for ln in usable if ln.x0 < mid and ln.x1 < right_min]
+            if ends and max(ends) < right_min:
+                # 왼쪽 단은 오른쪽 단 글자 바로 앞까지: 글자보다 넓게 그린 상자·그림도 잘리지 않게.
+                # 사이의 단 구분선은 가장자리 세로줄이라 여백 정리 때 지워진다.
+                x1 = max(max(ends) + 2, right_min - 6)
+                return [Column(max(0, left - 4), x1), Column(max(x1 + 1, right_min - 4), min(W, right + 4))]
+        # 단 경계는 빈 띠의 가운데(구분선 자리)에서 3pt 떨어진 곳: 글자 폭 오차로 끝 글자가 잘리지 않게
         m = max(1, min(3, best[0] / 2 - 1))
         return [Column(max(0, left - 4), mid - m), Column(mid + m, min(W, right + 4))]
     return [Column(max(0, left - 4), min(W, right + 4))]
@@ -203,23 +215,27 @@ def _footer_tops(page: pymupdf.Page, lines: list[_Line], columns: list[Column]) 
     H = page.rect.height
     tops = [H] * len(columns)
     for ln in lines:
+        top = ln.y0
         if _FOOTER_TEXT_RE.search(ln.text):
             is_notice = "확인" in ln.text and "사항" in ln.text
             if not (ln.y0 > 0.85 * H or is_notice):
                 continue
+            top = ln.y0 - 1.5 * (ln.style[1] or 10)  # 문구를 둘러싼 상자 테두리까지 피한다
         elif _PAGE_NUMBER_RE.match(ln.text):
             # 쪽 번호: 맨 아래 띠, 또는 아래쪽 가운데·바깥 가장자리 (그래프 눈금 숫자와 구분)
             cx = (ln.x0 + ln.x1) / 2
             placed = abs(cx - page.rect.width / 2) < 0.12 * page.rect.width or cx < 0.12 * page.rect.width or cx > 0.88 * page.rect.width
             if not (ln.y0 > 0.93 * H or (ln.y0 > 0.87 * H and placed)):
                 continue
+            top = ln.y0 - 1.5 * (ln.style[1] or 10)  # 쪽 번호를 둘러싼 상자 테두리까지 피한다
         else:
             continue
-        if (ln.x1 - ln.x0) > 0.6 * page.rect.width or _col_of(ln.x0, ln.x1, columns) is None:
-            tops = [min(t, ln.y0) for t in tops]  # 전체 폭 꼬리말
+        centered = abs((ln.x0 + ln.x1) / 2 - page.rect.width / 2) < 0.12 * page.rect.width
+        if (ln.x1 - ln.x0) > 0.6 * page.rect.width or centered or _col_of(ln.x0, ln.x1, columns) is None:
+            tops = [min(t, top) for t in tops]  # 전체 폭·가운데 꼬리말
         else:
             c = _col_of(ln.x0, ln.x1, columns)
-            tops[c] = min(tops[c], ln.y0)
+            tops[c] = min(tops[c], top)
     return tops
 
 
@@ -295,7 +311,9 @@ def _text_markers(page_no: int, lines: list[_Line], columns: list[Column]) -> tu
                 continue
             n = int(m.group(1))
             if 1 <= n <= 50:
-                markers.append(Marker(n, page_no, c, ln.y0, ln.x0, ln.style))
+                # 같은 높이에 걸친 조각(분수, 큰 괄호)이 번호 줄보다 위로 솟을 수 있다
+                top = min([o.y0 for o in col_lines if o.y1 > ln.y0 + 1 and o.y0 < ln.y1 - 1] + [ln.y0])
+                markers.append(Marker(n, page_no, c, top, ln.x0, ln.style))
     return markers, groups
 
 
@@ -496,7 +514,7 @@ def trim_whitespace(png: bytes, pad: int = 16, threshold: int = 235) -> bytes:
     mask = img.convert("L").point(lambda v: 255 if v < threshold else 0)
     # 가장자리 근처에서 위아래로 거의 끝까지 이어진 세로줄(단 구분선, 테두리)은 지운다
     w, h = mask.size
-    edge = max(24, int(w * 0.06))
+    edge = max(24, int(w * 0.12))
     px = mask.load()
     draw = ImageDraw.Draw(img)
     for x in list(range(min(edge, w))) + list(range(max(edge, w - edge), w)):
@@ -504,6 +522,13 @@ def trim_whitespace(png: bytes, pad: int = 16, threshold: int = 235) -> bytes:
             for y in range(h):
                 px[x, y] = 0
             draw.line((x, 0, x, h), fill=(255, 255, 255))
+    # 위·아래 가장자리 근처의 거의 끝까지 이어진 가로줄(머리 줄, 상자 테두리)도 지운다
+    edge_y = max(24, int(h * 0.06))
+    for y in list(range(min(edge_y, h))) + list(range(max(edge_y, h - edge_y), h)):
+        if sum(1 for x in range(w) if px[x, y]) > w * 0.85:
+            for x in range(w):
+                px[x, y] = 0
+            draw.line((0, y, w, y), fill=(255, 255, 255))
     bbox = mask.getbbox()
     if bbox:
         x0, y0, x1, y1 = bbox

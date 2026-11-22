@@ -31,6 +31,8 @@ def make(path: str) -> None:
     for n, (x, y) in {1: (L, 230), 2: (L, 560), 3: (R, 230), 4: (R, 560)}.items():
         page.insert_text((x, y), f"{n}.", fontname="korea", fontsize=13)
         _text(page, x + 22, y, [f"식 x(2x + {n}) - x^2 을 간단히", "하면? [2점]", "① 1   ② 2   ③ 3   ④ 4   ⑤ 5"])
+    # 1번 아래 조건 상자: 글자보다 오른쪽으로 넓게 그려져 단 구분선 가까이까지 간다
+    page.draw_rect(pymupdf.Rect(L + 20, 300, W / 2 - 6, 340))
     # 아래 가운데 쪽 번호 상자 "1 / 12"
     page.draw_rect(pymupdf.Rect(W / 2 - 20, H - 70, W / 2 + 20, H - 46))
     page.insert_text((W / 2 - 17, H - 58), "1", fontname="helv", fontsize=9)

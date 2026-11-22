@@ -223,3 +223,4 @@ def test_first_page_with_big_title(tmp_path: Path):
     w = {c.number: Image.open(tmp_path / "out" / c.image).width for c in crops}
     assert w[2] < 1000  # 단 하나 폭 (페이지 전체 폭이면 오른쪽 단 4번이 섞인 것)
     assert crops[1].rect[3] < 1031 - 70  # 2번 영역이 쪽 번호 상자 위에서 끝난다
+    assert crops[0].rect[2] >= 728 / 2 - 6  # 글자보다 넓은 조건 상자도 잘리지 않는다
