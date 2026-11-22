@@ -205,7 +205,7 @@ dialog#detail{overflow:hidden}
 .seg{display:flex;gap:2px;padding:10px 16px 0;border-bottom:1px solid var(--rule);flex-wrap:wrap}
 .seg button{border:0;background:none;padding:8px 12px;border-bottom:2px solid transparent;cursor:pointer;color:var(--muted);margin-bottom:-1px}
 .seg button[aria-selected="true"]{border-bottom-color:var(--omr);color:var(--ink);font-weight:600}
-/* 내용 칸(핵심 접근법 등)은 줄어들지 않고 다 보이게, 넘치면 오른쪽 패널 전체가 스크롤된다.
+/* 내용 칸(풀이, 옮겨 적은 문제 등)은 줄어들지 않고 다 보이게, 넘치면 오른쪽 패널 전체가 스크롤된다.
    (.math 처럼 가로 스크롤이 있는 칸은 grid 에서 높이가 줄어들어 칸마다 세로 스크롤이 생기므로 줄 높이를 내용만큼 고정) */
 .seg-body{overflow:auto;padding:16px;display:grid;gap:16px;align-content:start;grid-auto-rows:max-content}
 .seg-body .math{overflow-y:hidden}
@@ -2340,7 +2340,6 @@ function analysisTabHTML(p) {
         ${c.secondary_unit_ids?.length ? `<dt>함께 쓰이는 단원</dt><dd>${c.secondary_unit_ids.map(u => `<span class="chip">${esc(UNITS[u]?.section)}</span>`).join(" ")}</dd>` : ""}
         <dt>핵심 개념</dt><dd>${c.key_concepts.map(k => `<span class="chip red">${esc(k)}</span>`).join(" ") || "—"}</dd>
       </dl>
-      <div class="callout math"><b>핵심 접근법</b><br>${escBr(c.solution_approach)}</div>
       <div><h3 style="font-size:16px;margin-bottom:6px">옮겨 적은 문제</h3><div class="math">${escBr(c.transcription)}</div>
         ${c.figure_description ? `<p class="muted">[그림] ${escBr(c.figure_description)}</p>` : ""}</div>`
       : `<p class="muted">아직 분류되지 않았습니다.</p>`}

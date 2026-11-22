@@ -201,18 +201,18 @@ const sse = obj => {
   await page.screenshot({path: `${OUT}/${MODE}-3-answer.png`});
   await page.locator("#detail .seg button[data-t=analysis]").click(); await page.waitForTimeout(200);
   await page.screenshot({path: `${OUT}/${MODE}-4-analysis.png`});
-  // 긴 핵심 접근법도 칸 안 스크롤 없이 다 보이고, 넘치면 오른쪽 패널 전체가 스크롤된다
+  // 분석 탭에는 핵심 접근법이 없고, 내용이 길면 오른쪽 패널 전체가 스크롤된다 (칸마다 스크롤이 생기지 않음)
   const longView = await page.evaluate(() => {
-    const p = state.problems.get(detailState.id), keep = p.classification.solution_approach;
-    p.classification.solution_approach = "직선 $ED$ 위의 점 $F$, $G$ 의 위치를 비율로 나타낸다. ".repeat(40);
+    const p = state.problems.get(detailState.id), keep = p.classification.transcription;
+    p.classification.transcription = "직선 $ED$ 위의 점 $F$, $G$ 의 위치를 비율로 나타낸다. ".repeat(60);
     renderDetail();
-    const c = document.querySelector("#detail .seg-body .callout.math"), body = document.querySelector("#detail .seg-body");
-    const r = [c.scrollHeight - c.clientHeight, body.scrollHeight > body.clientHeight, c.clientHeight];
-    p.classification.solution_approach = keep; renderDetail();
+    const body = document.querySelector("#detail .seg-body"), m = body.querySelector(".math");
+    const r = [/핵심 접근법/.test(body.textContent), body.scrollHeight > body.clientHeight, m.scrollHeight - m.clientHeight];
+    p.classification.transcription = keep; renderDetail();
     return r;
   });
-  console.log("long approach:", JSON.stringify(longView));
-  if (longView[0] > 1 || !longView[1]) fails.push("긴 핵심 접근법 표시: " + longView);
+  console.log("analysis view:", JSON.stringify(longView));
+  if (longView[0] || !longView[1] || longView[2] > 1) fails.push("분석 탭 표시: " + longView);
   // 문항 하나의 단원 옮기기: 학년·과목 → 영역 → 중단원
   const curId = await page.evaluate(() => document.querySelector("#detail").dataset.id || null);
   await page.selectOption("#detail .up-subj", "MS2"); await page.selectOption("#detail .up-chap", "3"); await page.selectOption("#detail .up-sec", "MS2-3-3");
