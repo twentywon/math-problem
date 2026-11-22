@@ -65,6 +65,7 @@ const PLATFORM = (() => {
           done("problems", snap);
         }, e => { clearTimeout(timer); toast("저장소 오류: " + e.code); });
       },
+      async reload() { /* 아티팩트 저장소는 바뀔 때마다 실시간으로 받아 오므로 다시 그리기만 한다 */ },
       async saveImage(id, blob) { const r = await assets.upload(blob); return {imageId: r.id, image: r.url}; },
       putExam(e) { state.exams.set(e.id, e); return queue("e/" + e.id, () => db.collection("exams").doc(e.id).set(plain(e))); },
       putProblem(p) {
@@ -106,6 +107,14 @@ const PLATFORM = (() => {
           for (const m of await req(os("made", "readonly").getAll())) state.made.set(m.id, m);
         } catch (e) { dbh = null; }
         loaded = true; onChange();
+      },
+      // 저장소를 처음부터 다시 읽는다 (다른 탭·창에서 바꾼 내용 반영)
+      async reload() {
+        if (!dbh) return;
+        const [es, ps, ms] = await Promise.all(["exams", "problems", "made"].map(n => req(os(n, "readonly").getAll())));
+        state.exams = new Map(es.map(e => [e.id, e]));
+        state.problems = new Map(ps.map(p => [p.id, upgradeProblem(p)]));
+        state.made = new Map(ms.map(m => [m.id, m]));
       },
       async saveImage(id, blob) { return {image: await blobToDataURL(blob)}; },
       async putExam(e) { state.exams.set(e.id, e); if (dbh) await req(os("exams", "readwrite").put(e)).catch(() => {}); },

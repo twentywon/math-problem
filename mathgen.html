@@ -215,6 +215,7 @@ dialog#detail{overflow:hidden}
 .gen h4{font-size:16px}
 .g-view{justify-self:start}
 .make-form{display:grid;gap:12px}
+.page-tools{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:-6px 0 8px;font-size:13px}
 .make-grid{display:grid;grid-template-columns:minmax(0,2.4fr) repeat(3,minmax(110px,1fr));gap:12px;align-items:start}
 .make-grid .mf{display:grid;gap:4px;font-size:14px;min-width:0}
 @media (max-width:800px){.make-grid{grid-template-columns:1fr 1fr}.make-grid .mf:first-child{grid-column:1/-1}}
@@ -286,6 +287,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 <main class="gutter">
   <!-- ① 문제 넣기 -->
   <section id="tab-ingest">
+    <div class="page-tools"><span class="muted page-stamp" role="status"></span><button class="btn sm ghost page-refresh" title="저장된 내용을 다시 읽어 이 화면을 새로 그립니다">↻ 새로고침</button></div>
     <div id="drop" class="drop disabled" role="button" tabindex="0" aria-label="PDF 또는 문제 이미지 파일 선택">
       <strong>PDF나 문제 이미지를 여기에 끌어다 놓으세요</strong>
       <span class="muted">시험지·교재·학습지 PDF, 문제 사진·캡처(PNG·JPG·WebP) · 눌러서 고르기(여러 개 가능) · 캡처한 그림은 Ctrl+V 로 붙여넣기</span>
@@ -326,6 +328,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 
   <!-- ② 문제 저장소 -->
   <section id="tab-library" hidden>
+    <div class="page-tools"><span class="muted page-stamp" role="status"></span><button class="btn sm ghost page-refresh" title="저장된 내용을 다시 읽어 이 화면을 새로 그립니다">↻ 새로고침</button></div>
     <div class="panel row">
       <input id="q" type="text" placeholder="검색 (출처, 개념, 문제 내용)" style="flex:1;min-width:180px" aria-label="검색">
       <select id="f-exam" aria-label="출처"><option value="">모든 출처</option></select>
@@ -349,6 +352,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 
   <!-- ③ 문항 표 -->
   <section id="tab-table" hidden>
+    <div class="page-tools"><span class="muted page-stamp" role="status"></span><button class="btn sm ghost page-refresh" title="저장된 내용을 다시 읽어 이 화면을 새로 그립니다">↻ 새로고침</button></div>
     <div class="panel">
       <div class="row">
         <input id="t-q" type="text" placeholder="검색" style="flex:1;min-width:160px" aria-label="검색">
@@ -384,6 +388,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 
   <!-- ④ 문제 만들기 -->
   <section id="tab-make" hidden>
+    <div class="page-tools"><span class="muted page-stamp" role="status"></span><button class="btn sm ghost page-refresh" title="저장된 내용을 다시 읽어 이 화면을 새로 그립니다">↻ 새로고침</button></div>
     <div class="panel make-form">
       <h2 style="font-size:18px">교육과정에서 골라 새 문제 만들기</h2>
       <div class="make-grid">
@@ -417,6 +422,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
 
   <!-- 설정 / 정보 -->
   <section id="tab-settings" hidden>
+    <div class="page-tools"><span class="muted page-stamp" role="status"></span><button class="btn sm ghost page-refresh" title="저장된 내용을 다시 읽어 이 화면을 새로 그립니다">↻ 새로고침</button></div>
     <div id="settings-root"></div>
     <div class="panel">
       <h2 style="font-size:18px;margin-bottom:6px">데이터</h2>
@@ -641,6 +647,14 @@ const PLATFORM = (() => {
         for (const m of await req(os("made", "readonly").getAll())) state.made.set(m.id, m);
       } catch (e) { dbh = null; toast("브라우저 저장소를 열 수 없어 이번에만 임시로 저장합니다. 시크릿 창이 아닌 일반 창에서 여세요."); }
       loaded = true; onChange();
+    },
+    // 저장소를 처음부터 다시 읽는다 (다른 탭·창에서 바꾼 내용 반영)
+    async reload() {
+      if (!dbh) return;
+      const [es, ps, ms] = await Promise.all(["exams", "problems", "made"].map(n => req(os(n, "readonly").getAll())));
+      state.exams = new Map(es.map(e => [e.id, e]));
+      state.problems = new Map(ps.map(p => [p.id, upgradeProblem(p)]));
+      state.made = new Map(ms.map(m => [m.id, m]));
     },
     async saveImage(id, blob) { return {image: await blobToDataURL(blob)}; },
     async putExam(e) { state.exams.set(e.id, e); if (dbh) await req(os("exams", "readwrite").put(e)).catch(() => {}); },
@@ -2615,6 +2629,25 @@ function similarity(a, b) {
   return k / Math.max(A.size, B.size);
 }
 const TOO_SIMILAR = 0.6;
+// 새로고침: 저장소를 다시 읽고 지금 화면을 새로 그린다 (입력 중인 검색어·설정 값은 그대로)
+async function refreshPage(btn) {
+  const sec = btn.closest("section"), name = sec.id.replace("tab-", "");
+  btn.disabled = true; btn.textContent = "↻ 새로고침 중…";
+  try {
+    await PLATFORM.store.reload?.();
+    state.rev++;
+    for (const id of [...state.selected]) if (!state.problems.has(id)) state.selected.delete(id);
+    updateStatus(); fillImgTarget();
+    if (name === "ingest") refreshJobs();
+    else if (name === "library") renderLibrary();
+    else if (name === "table") renderTable(true);
+    else if (name === "make") renderMake();
+    else if (name === "settings") renderSettings();
+    sec.querySelector(".page-stamp").textContent = `${new Date().toLocaleTimeString("ko-KR", {hour: "numeric", minute: "2-digit", second: "2-digit"})}에 새로고침했습니다`;
+  } catch (e) { toast("새로고침하지 못했습니다: " + e.message); }
+  btn.disabled = false; btn.textContent = "↻ 새로고침";
+}
+document.querySelectorAll(".page-refresh").forEach(b => b.onclick = () => refreshPage(b));
 function renderMake() {
   if (!$("#mk-unit").firstChild) { $("#mk-unit").innerHTML = unitPickerHTML(""); wireUnitPicker($("#mk-unit"), () => {}); }
   const ok = aiOK() && canEdit();

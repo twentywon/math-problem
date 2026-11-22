@@ -512,6 +512,34 @@ const sse = obj => {
   console.log("delete:", before3, afterOne, afterShown, delExamShown, examGone);
   if (afterOne !== before3 - 1 || afterShown !== 0 || !delExamShown || !examGone) fails.push("저장소 삭제");
 
+  // 화면마다 새로고침
+  if (MODE === "html") {
+    await page.click("nav.tabs button[data-tab=library]"); await page.waitForTimeout(200);
+    const before = await page.evaluate(() => state.problems.size);
+    await page.evaluate(() => new Promise((res, rej) => { // 다른 창에서 저장한 것처럼 IndexedDB 에 직접 넣는다
+      const r = indexedDB.open("mathgen", 2);
+      r.onsuccess = () => { const tx = r.result.transaction("problems", "readwrite");
+        tx.objectStore("problems").put({id: "outside-q1", examId: "outside", examTitle: "바깥에서", order: 1, number: 1, section: 0, image: "", classification: null, unitId: null, generated: []});
+        tx.oncomplete = () => { r.result.close(); res(); }; tx.onerror = () => rej(tx.error); };
+      r.onerror = () => rej(r.error);
+    }));
+    const notYet = await page.evaluate(() => state.problems.has("outside-q1"));
+    await page.click("#tab-library .page-refresh"); await page.waitForFunction(() => /새로고침했습니다/.test(document.querySelector("#tab-library .page-stamp").textContent));
+    const after = await page.evaluate(() => [state.problems.size, state.problems.has("outside-q1"), document.querySelector("#lib-status").textContent]);
+    console.log("refresh library:", before, notYet, JSON.stringify(after));
+    if (notYet || !after[1] || after[0] !== before + 1) fails.push("저장소 새로고침");
+    await page.evaluate(() => removeProblem(state.problems.get("outside-q1")));
+  }
+  const stamps = [];
+  for (const tab of ["ingest", "library", "table", "make", "settings"]) {
+    await page.click(`nav.tabs button[data-tab=${tab}]`);
+    await page.click(`#tab-${tab} .page-refresh`);
+    await page.waitForFunction(id => /새로고침했습니다/.test(document.querySelector(`#tab-${id} .page-stamp`).textContent), tab, {timeout: 5000}).catch(() => {});
+    stamps.push(/새로고침했습니다/.test(await page.textContent(`#tab-${tab} .page-stamp`)));
+  }
+  console.log("refresh buttons:", JSON.stringify(stamps));
+  if (!stamps.every(Boolean)) fails.push("화면별 새로고침: " + stamps);
+
   await page.setViewportSize({width: 400, height: 820});
   await page.click("nav.tabs button[data-tab=library]");
   console.log("phone scrollWidth:", await page.evaluate(() => document.documentElement.scrollWidth));
