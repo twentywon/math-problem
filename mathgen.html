@@ -350,6 +350,7 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
         </select>
         <button class="btn" id="t-xlsx">엑셀(.xlsx) 저장</button>
         <button class="btn" id="t-csv">CSV 저장</button>
+        <button class="btn ghost" id="t-sort-reset" hidden>정렬 원래대로</button>
       </div>
       <div class="row" style="margin-top:10px">
         <span class="muted" id="t-sel">선택 0개</span>
@@ -2088,7 +2089,7 @@ function renderTable(refreshOptions = false) {
   const arrow = k => state.sort.key === k ? (state.sort.dir > 0 ? " ▲" : " ▼") : "";
   const allSel = rows.length && rows.every(p => state.selected.has(p.id));
   const head = `<tr><th class="nosort"><input type="checkbox" id="t-all" ${allSel ? "checked" : ""} aria-label="모두 선택"></th>` +
-    COLS.map(c => `<th data-k="${c.k}">${esc(c.t)}${arrow(c.k)}</th>`).join("") + `<th class="nosort">상세</th></tr>`;
+    COLS.map(c => `<th data-k="${c.k}" title="누를 때마다 오름차순 → 내림차순 → 원래 순서" aria-sort="${state.sort.key === c.k ? (state.sort.dir > 0 ? "ascending" : "descending") : "none"}">${esc(c.t)}${arrow(c.k)}</th>`).join("") + `<th class="nosort">상세</th></tr>`;
   const body = rows.map(p => `<tr data-id="${esc(p.id)}"><td><input type="checkbox" class="sel" ${state.selected.has(p.id) ? "checked" : ""} aria-label="${p.number}번 선택"></td>${COLS.map(c => {
     if (c.k === "official") return `<td><input type="text" class="off" value="${esc(p.officialAnswer || "")}" aria-label="${p.number}번 실제 정답" ${canEdit() ? "" : "disabled"}></td>`;
     const v = c.v(p);
@@ -2098,10 +2099,15 @@ function renderTable(refreshOptions = false) {
     return `<td class="${c.num ? "num" : c.wrap ? "wrap" : c.ans ? "ans" : ""}">${esc(v)}</td>`;
   }).join("")}<td><button class="btn sm open">열기</button></td></tr>`).join("");
   $("#sheet").innerHTML = `<thead>${head}</thead><tbody>${body || `<tr><td colspan="${COLS.length + 2}" class="muted">문항이 없습니다.</td></tr>`}</tbody>`;
+  renderMath($("#sheet tbody")); // 핵심 개념·접근법 등의 $...$ 수식
+  $("#t-sort-reset").hidden = !state.sort.key;
   const selText = () => { $("#t-sel").textContent = `선택 ${state.selected.size}개 · 표시 ${rows.length}개`; };
   selText();
   $("#sheet").querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
-    const k = th.dataset.k; state.sort = {key: k, dir: state.sort.key === k ? -state.sort.dir : 1}; renderTable();
+    // 같은 머리글을 누를 때마다 오름차순 → 내림차순 → 원래 순서(출처·번호 순)
+    const k = th.dataset.k, same = state.sort.key === k;
+    state.sort = !same ? {key: k, dir: 1} : state.sort.dir > 0 ? {key: k, dir: -1} : {key: "", dir: 1};
+    renderTable();
   });
   $("#t-all").onchange = e => { rows.forEach(p => e.target.checked ? state.selected.add(p.id) : state.selected.delete(p.id)); renderTable(); };
   $("#sheet").querySelectorAll("tbody tr[data-id]").forEach(tr => {
@@ -2112,6 +2118,7 @@ function renderTable(refreshOptions = false) {
   });
 }
 const selectedIds = () => [...state.selected].filter(id => state.problems.has(id));
+$("#t-sort-reset").onclick = () => { state.sort = {key: "", dir: 1}; renderTable(); };
 $("#t-classify").onclick = async () => {
   const ids = selectedIds(); if (!ids.length) { $("#t-status").textContent = "먼저 표에서 문항을 선택하세요."; return; }
   $("#t-status").textContent = `분류 중… 0/${ids.length}`;

@@ -44,7 +44,7 @@ function answerFor(prompt) {
   if (prompt.includes("이미 저장된 문항들의 난이도다")) anchored++;
   return {items: Array.from({length: n}, (_, i) => ({index: i + 1, points: (nums[i] || 1) > 20 ? 4 : (nums[i] || 1) > 8 ? 3 : 2, difficulty_score: Math.min(10, 1 + ((nums[i] || 1) * 7) % 10), transcription: "함수 $y=-x(x-6)$ 의 그래프 ...", figure_description: "", question_type: "5지선다",
     primary_unit_id: units[(nClass++) % units.length], secondary_unit_ids: ["CM2-1-1"], key_concepts: ["이차함수의 최대·최소", "삼각형의 넓이"],
-    solution_approach: "밑변을 고정하고 높이를 이차함수로 나타내 꼭짓점에서 최댓값을 찾는다.", answer: "3",
+    solution_approach: "밑변을 고정하고 높이 $y=-x(x-6)$ 을 이차함수로 나타내 꼭짓점에서 최댓값을 찾는다.", answer: "3",
     solution_steps: ["점 A 의 좌표를 구한다: $A(6,0)$.", "넓이 $S=\\frac12\\cdot 6\\cdot y_P$ 이다.", "$y_P$ 의 최댓값은 꼭짓점의 $y$좌표 $9$ 이다."], difficulty: 3}))};
 }
 const sse = obj => {
@@ -256,6 +256,20 @@ const sse = obj => {
   // 문항 표
   await page.click("nav.tabs button[data-tab=table]");
   console.log("table rows:", await page.locator("#sheet tbody tr[data-id]").count());
+  // 표 안 수식, 머리글 세 번 누르면 원래 순서
+  const tableMath = await page.locator("#sheet tbody .katex").count();
+  console.log("table math:", tableMath);
+  if (!tableMath) fails.push("문항 표 수식");
+  const rowOrder = () => page.evaluate(() => [...document.querySelectorAll("#sheet tbody tr[data-id]")].map(tr => tr.dataset.id).join());
+  const orig = await rowOrder(), noTh = page.locator('#sheet th[data-k="num"]');
+  await noTh.click(); const asc = await rowOrder(); const a1 = await noTh.getAttribute("aria-sort");
+  await page.locator('#sheet th[data-k="num"]').click(); const desc = await rowOrder(); const a2 = await page.locator('#sheet th[data-k="num"]').getAttribute("aria-sort");
+  const resetShown = await page.locator("#t-sort-reset").isVisible();
+  await page.locator('#sheet th[data-k="num"]').click(); const back = await rowOrder(); const a3 = await page.locator('#sheet th[data-k="num"]').getAttribute("aria-sort");
+  console.log("sort cycle:", a1, a2, a3, "reset button:", resetShown, "restored:", back === orig, "desc is reverse:", desc === asc.split(",").reverse().join());
+  if (a1 !== "ascending" || a2 !== "descending" || a3 !== "none" || back !== orig || !resetShown || desc !== asc.split(",").reverse().join()) fails.push("표 정렬 되돌리기");
+  await page.locator('#sheet th[data-k="num"]').click(); await page.click("#t-sort-reset");
+  if (await rowOrder() !== orig || await page.locator("#t-sort-reset").isVisible()) fails.push("정렬 원래대로 버튼");
   await page.check("#t-all"); await page.fill("#t-sim", "1"); await page.fill("#t-var", "0"); await page.fill("#t-con", "0");
   await page.click("#t-gen");
   await page.waitForFunction(() => /문제 만들기 완료/.test(document.querySelector("#t-status").textContent), null, {timeout: 30000});
