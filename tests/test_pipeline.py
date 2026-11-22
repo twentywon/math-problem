@@ -189,3 +189,20 @@ def test_vision_mode_for_scanned_pdf(sample: Path, tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="vision"):
         split_pdf(scan_path, tmp_path / "out2", mode="auto", client=None)
+
+
+def test_shared_material_is_attached(tmp_path: Path):
+    """[11~12] 공통 자료는 11·12번 이미지 위에 붙고, 앞 문항(10번)에는 들어가지 않는다."""
+    from PIL import Image
+
+    from mathgen.pdf_split import split_pdf
+
+    from .make_group_pdf import make as make_group
+
+    pdf = tmp_path / "group.pdf"
+    make_group(str(pdf))
+    crops = split_pdf(pdf, tmp_path / "out")
+    assert [(c.number, c.shared) for c in crops] == [(10, ""), (11, "11~12"), (12, "11~12"), (13, "")]
+    h = {c.number: Image.open(tmp_path / "out" / c.image).height for c in crops}
+    assert h[12] > h[13] * 3  # 12번은 오른쪽 단 맨 위지만 공통 자료가 붙어 길다
+    assert h[10] < h[11] / 3  # 10번에는 공통 자료가 섞이지 않는다

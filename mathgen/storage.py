@@ -80,6 +80,7 @@ class Library:
                 "section": c.section,
                 "page": c.page + 1,
                 "image": f"exams/{exam_id}/{c.image}",
+                "shared": c.shared or None,
                 "classification": None,
                 "unit_id": None,
                 "unit_image": None,
