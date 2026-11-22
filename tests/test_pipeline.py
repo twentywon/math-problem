@@ -206,3 +206,20 @@ def test_shared_material_is_attached(tmp_path: Path):
     h = {c.number: Image.open(tmp_path / "out" / c.image).height for c in crops}
     assert h[12] > h[13] * 3  # 12번은 오른쪽 단 맨 위지만 공통 자료가 붙어 길다
     assert h[10] < h[11] / 3  # 10번에는 공통 자료가 섞이지 않는다
+
+
+def test_first_page_with_big_title(tmp_path: Path):
+    """큰 제목이 가운데를 가로지르는 1쪽에서도 오른쪽 단 문항(3, 4번)을 찾고, 쪽 번호 상자는 빼고 자른다."""
+    from PIL import Image
+
+    from mathgen.pdf_split import split_pdf
+
+    from .make_firstpage_pdf import make as make_first
+
+    pdf = tmp_path / "first.pdf"
+    make_first(str(pdf))
+    crops = split_pdf(pdf, tmp_path / "out")
+    assert [c.number for c in crops] == [1, 2, 3, 4]
+    w = {c.number: Image.open(tmp_path / "out" / c.image).width for c in crops}
+    assert w[2] < 1000  # 단 하나 폭 (페이지 전체 폭이면 오른쪽 단 4번이 섞인 것)
+    assert crops[1].rect[3] < 1031 - 70  # 2번 영역이 쪽 번호 상자 위에서 끝난다

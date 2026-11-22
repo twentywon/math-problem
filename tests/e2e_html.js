@@ -1,9 +1,14 @@
-// mathgen.html 브라우저 통합 테스트 (Playwright).
-// CDN 은 로컬 npm 패키지로, AI API(Claude·OpenAI·Gemini)는 가짜 응답으로 대체한다.
-// 사용: node tests/e2e_html.js <libs 폴더(katex, pdfjs, jszip, xlsx 패키지)> <mathgen.html 절대경로> <group.pdf> <출력 폴더>
+// 브라우저 통합 테스트 (Playwright). CDN 은 로컬 npm 패키지로, AI 는 가짜 응답으로 대체한다.
+//
+//   node tests/e2e_html.js standalone <libs> <mathgen.html> <group.pdf> <출력 폴더>
+//   node tests/e2e_html.js artifact   <libs> <아티팩트 폴더(mathgen-artifact.html 등)> <group.pdf> <출력 폴더>
+//
+// <libs>: npm pack 으로 받아 푼 katex(package/), pdfjs(pdfjs/package/), jszip(jszip/package/), xlsx(xlsx/package/) 가 있는 폴더
 const { chromium } = require("playwright");
 const fs = require("fs");
-const [K, HTML, PDF, OUT] = process.argv.slice(2);
+const http = require("http");
+const path = require("path");
+const [MODE, K, TARGET, PDF, OUT] = process.argv.slice(2);
 
 function local(url) {
   if (url.includes("katex@0.16.11/")) return `${K}/package/${url.split("katex@0.16.11/")[1]}`;
@@ -11,138 +16,193 @@ function local(url) {
   if (url.includes("jszip/")) return `${K}/jszip/package/dist/jszip.min.js`;
   if (url.includes("xlsx/")) return `${K}/xlsx/package/dist/xlsx.full.min.js`;
 }
+// 가짜 AI: 지시문 내용으로 어떤 작업인지 구분해 그럴듯한 JSON 을 돌려준다
 const units = ["CM1-2-2", "CM2-1-3", "ALG-1-1", "CM1-2-3"];
 let nClass = 0;
-function answerFor(system, user) {
-  if (system.includes("연결 확인")) return {ok: true};
-  if (system.includes("검토자")) return {answer: user.includes("B형") ? "2" : "3", well_posed: true, issues: "", solution_brief: "..."};
-  if (system.includes("출제 경험")) return {problems: [
-    {kind: "유사문제", title: "넓이 최대", statement: "이차함수 $y=-x(x-8)$ 위의 점 P 에 대하여 삼각형 OAP 넓이가 최대일 때 P 의 y좌표는?", choices: ["$12$", "$14$", "$16$", "$18$", "$20$"], figure_description: "", answer: "3", solution: "꼭짓점에서 최대", shared_concepts: ["이차함수 최대"], relation_to_original: "수치 변경", unit_id: "CM1-2-2", difficulty: 2},
-    {kind: "개념연계문제", title: "B형", statement: "원 $x^2+y^2=25$ 위의 점과 지름의 양 끝이 이루는 각은?", choices: [], figure_description: "", answer: "90", solution: "...", shared_concepts: ["원주각"], relation_to_original: "직각 조건", unit_id: "CM2-1-3", difficulty: 3}]};
-  if (system.includes("수능 수학 전문가")) return {answer: user.includes("13번") ? "4" : "3", solution: "$f(x)$ 를 정리하면 ...", confidence: "high"};
-  return {transcription: "함수 $y=-x(x-6)$ ...", figure_description: "", question_type: "5지선다", primary_unit_id: units[(nClass++) % units.length],
-    secondary_unit_ids: [], key_concepts: ["이차함수의 최대·최소"], solution_approach: "꼭짓점을 찾는다.", answer: "3", solution: "...", difficulty: 3};
+function answerFor(prompt) {
+  if (prompt.includes("연결 확인")) return {ok: true};
+  if (prompt.includes("검토자")) {
+    const n = (prompt.match(/\[문제 \d+\]/g) || []).length;
+    return {items: Array.from({length: n}, (_, i) => ({index: i + 1, answer: i === 1 ? "7" : "3", well_posed: true, issues: ""}))};
+  }
+  if (prompt.includes("출제 경험")) return {problems: [
+    {kind: "유사문제", title: "넓이가 최대인 삼각형", statement: "이차함수 $y=-x(x-8)$ 의 그래프 위의 점 P 에 대하여 삼각형 OAP 의 넓이가 최대일 때, 점 P 의 $y$좌표는?",
+      choices: ["$12$", "$14$", "$16$", "$18$", "$20$"], figure_description: "", answer: "3",
+      solution_steps: ["밑변 $\\overline{OA}=8$ 은 고정이므로 높이가 최대일 때 넓이가 최대이다.", "높이는 점 P 의 $y$좌표이고, $y=-(x-4)^2+16$ 이므로 최댓값은 $16$ 이다.", "따라서 정답은 ③ $16$ 이다."],
+      shared_concepts: ["이차함수의 최대"], relation_to_original: "함수만 바꾸고 같은 방법으로 푼다", unit_id: "CM1-2-2", difficulty: 2},
+    {kind: "개념연계문제", title: "지름 위의 원주각", statement: "원 $x^2+y^2=25$ 위의 점 P 와 지름의 양 끝 A, B 에 대하여 $\\angle APB$ 의 크기(도)는?",
+      choices: [], figure_description: "", answer: "90", solution_steps: ["지름에 대한 원주각은 직각이다.", "따라서 $90$ 이다."],
+      shared_concepts: ["원주각"], relation_to_original: "직각 조건을 원으로 바꿔 본다", unit_id: "CM2-1-3", difficulty: 3}]};
+  if (prompt.includes("수능 수학 전문가")) return {answer: prompt.includes("13번") ? "4" : "3", key_idea: "밑변이 고정이면 높이가 최대일 때 넓이가 최대이다.",
+    steps: ["$A(6,0)$ 이므로 밑변 $\\overline{OA}=6$ 이다.", "높이는 점 P 의 $y$좌표 $-t(t-6)$ 이다.", "$-t(t-6)=-(t-3)^2+9$ 이므로 $t=3$ 일 때 최대 $9$ 이다."], confidence: "high"};
+  const n = Math.max(1, (prompt.match(/이미지 \d+:/g) || []).length);
+  return {items: Array.from({length: n}, (_, i) => ({index: i + 1, transcription: "함수 $y=-x(x-6)$ 의 그래프 ...", figure_description: "", question_type: "5지선다",
+    primary_unit_id: units[(nClass++) % units.length], secondary_unit_ids: ["CM2-1-1"], key_concepts: ["이차함수의 최대·최소", "삼각형의 넓이"],
+    solution_approach: "밑변을 고정하고 높이를 이차함수로 나타내 꼭짓점에서 최댓값을 찾는다.", answer: "3",
+    solution_steps: ["점 A 의 좌표를 구한다: $A(6,0)$.", "넓이 $S=\\frac12\\cdot 6\\cdot y_P$ 이다.", "$y_P$ 의 최댓값은 꼭짓점의 $y$좌표 $9$ 이다."], difficulty: 3}))};
 }
 const sse = obj => {
   const text = JSON.stringify(obj), h = Math.floor(text.length / 2);
   const ev = (t, d) => `event: ${t}\ndata: ${JSON.stringify(d)}\n\n`;
-  return ev("message_start", {type: "message_start", message: {id: "m", content: []}})
-    + ev("content_block_delta", {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: text.slice(0, h)}})
+  return ev("content_block_delta", {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: text.slice(0, h)}})
     + ev("content_block_delta", {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: text.slice(h)}})
     + ev("message_delta", {type: "message_delta", delta: {stop_reason: "end_turn"}}) + ev("message_stop", {type: "message_stop"});
 };
 
 (async () => {
   const b = await chromium.launch();
-  const ctx = await b.newContext({viewport: {width: 1300, height: 900}, acceptDownloads: true});
-  const calls = [], errors = [];
+  const ctx = await b.newContext({viewport: {width: 1320, height: 920}, acceptDownloads: true});
+  const errors = [], calls = [];
   await ctx.route(/cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com/, r => {
     const f = local(r.request().url());
     return f && fs.existsSync(f) ? r.fulfill({path: f, headers: {"access-control-allow-origin": "*"}}) : r.fulfill({status: 404});
   });
+  await ctx.route(/fonts\.(googleapis|gstatic)\.com/, r => r.fulfill({status: 200, contentType: "text/css", body: ""}));
   const cors = {"access-control-allow-origin": "*", "access-control-allow-headers": "*"};
   await ctx.route("https://api.anthropic.com/**", r => {
     const body = JSON.parse(r.request().postData() || "{}");
     calls.push({p: "anthropic", h: r.request().headers(), body});
-    const user = body.messages[0].content.filter(c => c.type === "text").map(c => c.text).join("");
-    r.fulfill({status: 200, headers: {...cors, "content-type": "text/event-stream"}, body: sse(answerFor(body.system[0].text, user))});
+    const prompt = body.system[0].text + body.messages[0].content.filter(c => c.type === "text").map(c => c.text).join("");
+    r.fulfill({status: 200, headers: {...cors, "content-type": "text/event-stream"}, body: sse(answerFor(prompt))});
   });
   await ctx.route("https://api.openai.com/**", r => {
-    const url = r.request().url();
-    if (url.endsWith("/models")) return r.fulfill({status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({data: [{id: "gpt-test-vision"}, {id: "gpt-mini"}]})});
+    if (r.request().url().endsWith("/models")) return r.fulfill({status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({data: [{id: "gpt-test-vision"}]})});
     const body = JSON.parse(r.request().postData());
     calls.push({p: "openai", h: r.request().headers(), body});
-    const user = body.messages[1].content.filter(c => c.type === "text").map(c => c.text).join("");
-    r.fulfill({status: 200, headers: cors, contentType: "application/json",
-      body: JSON.stringify({choices: [{message: {content: JSON.stringify(answerFor(body.messages[0].content, user))}, finish_reason: "stop"}]})});
+    const prompt = body.messages[0].content + body.messages[1].content.filter(c => c.type === "text").map(c => c.text).join("");
+    r.fulfill({status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({choices: [{message: {content: JSON.stringify(answerFor(prompt))}, finish_reason: "stop"}]})});
   });
   await ctx.route("https://generativelanguage.googleapis.com/**", r => {
     const url = r.request().url();
-    if (/\/models\?/.test(url)) return r.fulfill({status: 200, headers: cors, contentType: "application/json",
-      body: JSON.stringify({models: [{name: "models/gemini-test", supportedGenerationMethods: ["generateContent"]}, {name: "models/embed", supportedGenerationMethods: ["embedContent"]}]})});
+    if (/\/models\?/.test(url)) return r.fulfill({status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({models: [{name: "models/gemini-test", supportedGenerationMethods: ["generateContent"]}]})});
     const body = JSON.parse(r.request().postData());
     calls.push({p: "gemini", url, body});
-    const user = body.contents[0].parts.filter(p => p.text).map(p => p.text).join("");
+    const prompt = body.systemInstruction.parts[0].text + body.contents[0].parts.filter(p => p.text).map(p => p.text).join("");
     r.fulfill({status: 200, headers: cors, contentType: "application/json",
-      body: JSON.stringify({candidates: [{content: {parts: [{text: "```json\n" + JSON.stringify(answerFor(body.systemInstruction.parts[0].text, user)) + "\n```"}]}, finishReason: "STOP"}]})});
+      body: JSON.stringify({candidates: [{content: {parts: [{text: "```json\n" + JSON.stringify(answerFor(prompt)) + "\n```"}]}, finishReason: "STOP"}]})});
   });
+
+  let url = "file://" + TARGET, server = null;
+  if (MODE === "artifact") {
+    // 아티팩트 뼈대를 씌워 로컬 서버로 띄우고, window.claude 를 흉내 낸다
+    server = http.createServer((req, res) => {
+      const p = decodeURIComponent(req.url.split("?")[0]);
+      if (p === "/" || p === "/index.html") {
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        return res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head><body>${fs.readFileSync(path.join(TARGET, "mathgen-artifact.html"), "utf8")}</body></html>`);
+      }
+      const f = path.join(TARGET, p);
+      if (fs.existsSync(f)) return res.end(fs.readFileSync(f));
+      res.statusCode = 404; res.end();
+    }).listen(8799);
+    url = "http://localhost:8799/";
+    await ctx.route("**/_blob/**", r => r.fulfill({path: path.join(OUT, "blob-sample.png"), contentType: "image/png"}));
+    await ctx.exposeBinding("__answerFor", (_, prompt) => answerFor(prompt));
+    await ctx.addInitScript(() => {
+      const docs = {exams: new Map(), problems: new Map()}, subs = {exams: [], problems: []};
+      const snap = c => ({docs: [...docs[c].entries()].map(([id, v]) => ({id, exists: true, data: () => JSON.parse(JSON.stringify(v)), metadata: {fromCache: false}})), metadata: {fromCache: false, hasPendingWrites: false}});
+      const fire = c => setTimeout(() => subs[c].forEach(f => f(snap(c))), 5);
+      const db = {collection: c => ({onSnapshot: n => { subs[c].push(n); fire(c); return () => {}; }, doc: id => ({set: async v => { docs[c].set(id, v); fire(c); }, delete: async () => { docs[c].delete(id); fire(c); }})})};
+      const assets = {upload: async blob => ({id: "a" + Math.random().toString(16).slice(2), url: URL.createObjectURL(blob), sizeBytes: blob.size, contentType: blob.type}), delete: async () => {}};
+      window.__calls = []; window.__saved = [];
+      const sample = async () => ({text: ""});
+      sample.limits = async () => ({maxPromptBytes: 262144, images: {maxCount: 5, maxInputBytes: 2e7, mediaTypes: ["image/png", "image/jpeg"]}, modelTiers: ["default", "complex", "quick"]});
+      sample.json = async (prompt, opts) => { window.__calls.push({imgs: (opts.images || []).length, tier: opts.modelTier, cache: opts.cache}); return window.__answerFor(prompt); };
+      const downloads = {save: async ({filename, data}) => { window.__saved.push([filename, data.size || data.length]); return {status: "saved"}; }};
+      const map = {sample, db, assets, downloads};
+      window.claude = {use: async n => map[n] || null};
+    });
+  }
+
   const page = await ctx.newPage();
   page.on("pageerror", e => errors.push("pageerror: " + e.message));
   page.on("console", m => { if (m.type() === "error") errors.push("console: " + m.text()); });
-  page.on("dialog", d => d.accept());
-  await page.goto("file://" + HTML);
+  await page.goto(url);
+  const saved = [];
+  page.on("download", async d => { saved.push(d.suggestedFilename()); await d.saveAs(path.join(OUT, d.suggestedFilename())); });
 
-  // 1) Claude 설정
-  await page.click("nav button[data-tab=settings]");
-  await page.selectOption("#s-provider", "anthropic");
-  await page.fill("#s-key", "sk-ant-test"); await page.click("#s-save");
+  if (MODE === "standalone") {
+    await page.click("nav.tabs button[data-tab=settings]");
+    await page.selectOption("#s-provider", "anthropic");
+    await page.fill("#s-key", "sk-ant-test"); await page.click("#s-save");
+  }
+  await page.waitForFunction(() => !document.querySelector("#drop").classList.contains("disabled"), null, {timeout: 15000});
   console.log("pill:", await page.textContent("#ai-label"));
-
-  // 2) 공통 자료가 있는 PDF 넣기 (분류 + 교차 풀이)
-  await page.click("nav button[data-tab=ingest]");
+  await page.click("nav.tabs button[data-tab=ingest]");
+  await page.screenshot({path: `${OUT}/${MODE}-0-empty.png`});
   await page.check("#auto-solve");
   await page.setInputFiles("#file", PDF);
-  await page.waitForFunction(() => /완료|오류/.test(document.querySelector(".status")?.textContent || "") && !/AI 처리 중|자르기 완료: 문항 \d+개$/.test(document.querySelector(".status").textContent), null, {timeout: 60000});
-  console.log("status:", await page.textContent(".status"));
-  console.log("log:", (await page.textContent(".log")).split("\n").filter(l => /공통|문항 \d+개/.test(l)).join(" | "));
-  console.log("shared tags:", await page.locator(".crops .tag.shared").count());
-  await page.screenshot({path: OUT + "/h_ingest.png"});
+  await page.waitForFunction(() => /완료|오류/.test(document.querySelector(".status")?.textContent || "") && !/중…|자르기 완료: 문항 \d+개$/.test(document.querySelector(".status").textContent), null, {timeout: 60000});
+  console.log("status:", await page.textContent(".status"), "| shared chips:", await page.locator(".crops .chip.blue").count());
+  await page.screenshot({path: `${OUT}/${MODE}-1-ingest.png`});
 
-  // 3) 문항 표
-  await page.click("nav button[data-tab=table]");
-  const rows = await page.locator("#sheet tbody tr[data-id]").count();
-  console.log("table rows:", rows);
-  const firstRow = page.locator("#sheet tbody tr[data-id]").first();
-  await firstRow.locator("input.off").fill("3"); await firstRow.locator("input.off").dispatchEvent("change");
-  await page.waitForTimeout(200);
-  console.log("grade cells:", await page.locator("#sheet td.ok").allTextContents());
-  console.log("cross:", await page.locator("#sheet tbody tr").nth(3).locator("td").nth(10).textContent());
-  await page.click("#sheet th[data-k=num]"); await page.click("#sheet th[data-k=num]");
-  console.log("sorted desc first num:", await page.locator("#sheet tbody tr").first().locator("td").nth(2).textContent());
-  await page.check("#t-all");
-  await page.fill("#t-sim", "1"); await page.fill("#t-var", "0"); await page.fill("#t-con", "1");
-  await page.click("#t-gen");
-  await page.waitForFunction(() => /문제 만들기 완료/.test(document.querySelector("#t-status").textContent), null, {timeout: 30000});
-  console.log("bulk gen:", await page.textContent("#t-status"));
-  await page.screenshot({path: OUT + "/h_table.png", fullPage: true});
-  const [dl] = await Promise.all([page.waitForEvent("download"), page.click("#t-xlsx")]);
-  await dl.saveAs(OUT + "/table.xlsx");
-  const [dl2] = await Promise.all([page.waitForEvent("download"), page.click("#t-csv")]);
-  await dl2.saveAs(OUT + "/table.csv");
+  await page.click("nav.tabs button[data-tab=library]");
+  await page.waitForTimeout(300);
+  console.log("library:", await page.textContent("#lib-status"));
+  await page.screenshot({path: `${OUT}/${MODE}-2-library.png`});
 
-  // 4) OpenAI 로 전환: 모델 목록, 연결 테스트, 다시 분류
-  await page.click("nav button[data-tab=settings]");
-  await page.selectOption("#s-provider", "openai");
-  await page.fill("#s-key", "sk-openai-test");
-  await page.click("#s-list"); await page.waitForFunction(() => /불러왔습니다|못했/.test(document.querySelector("#s-msg").textContent));
-  console.log("openai list:", await page.textContent("#s-msg"));
-  await page.fill("#s-model", "gpt-test-vision"); await page.click("#s-save");
-  await page.click("#s-test"); await page.waitForFunction(() => /연결되었습니다|오류|못/.test(document.querySelector("#s-msg").textContent));
-  console.log("openai test:", await page.textContent("#s-msg"));
-  await page.click("nav button[data-tab=table]");
-  await page.locator("#sheet .open").first().click();
-  await page.click("#detail .resolve");
-  await page.waitForTimeout(800);
-  console.log("openai solve box:", (await page.locator("#detail .box").textContent()).replace(/\s+/g, " ").slice(0, 80));
+  // 문항 상세: 정답·풀이
+  await page.locator("#grid .card", {hasText: "11"}).first().click();
+  await page.waitForTimeout(400);
+  console.log("detail bubbles filled:", await page.locator("#detail .answer-card .bubble.fill").count(), "steps:", await page.locator("#detail ol.steps li").count());
+  await page.locator("#detail [data-pick='3']").click(); await page.waitForTimeout(200);
+  console.log("grade chip:", await page.locator("#detail .answer-card .chip.ok, #detail .answer-card .chip.bad").last().textContent());
+  await page.screenshot({path: `${OUT}/${MODE}-3-answer.png`});
+  await page.locator("#detail .seg button[data-t=analysis]").click(); await page.waitForTimeout(200);
+  await page.screenshot({path: `${OUT}/${MODE}-4-analysis.png`});
+  await page.locator("#detail .seg button[data-t=gen]").click();
+  await page.click("#detail .do-gen");
+  await page.waitForFunction(() => document.querySelectorAll("#detail .gen").length > 0, null, {timeout: 20000});
+  await page.locator("#detail .gen details").first().evaluate(d => d.open = true);
+  await page.waitForTimeout(300);
+  console.log("gen cards:", await page.locator("#detail .gen").count(), "verify chips:", (await page.locator("#detail .gen .chip.ok, #detail .gen .chip.warn").allTextContents()).join(","));
+  await page.screenshot({path: `${OUT}/${MODE}-5-gen.png`});
+  await page.click("#detail .next"); await page.waitForTimeout(200);
+  console.log("next ->", (await page.textContent("#detail .crumb")).slice(-6));
   await page.click("#detail .close");
 
-  // 5) Gemini 로 전환
-  await page.click("nav button[data-tab=settings]");
-  await page.selectOption("#s-provider", "gemini");
-  await page.fill("#s-key", "AIza-test");
-  await page.click("#s-list"); await page.waitForFunction(() => /불러왔습니다|못했/.test(document.querySelector("#s-msg").textContent));
-  console.log("gemini list:", await page.textContent("#s-msg"), await page.locator("#s-models option").count());
-  await page.fill("#s-model", "gemini-test"); await page.click("#s-save");
-  await page.click("#s-test"); await page.waitForFunction(() => /연결되었습니다|오류|못/.test(document.querySelector("#s-msg").textContent));
-  console.log("gemini test:", await page.textContent("#s-msg"));
-  // 다시 Claude 로 돌아가면 키가 남아 있는지
-  await page.selectOption("#s-provider", "anthropic");
-  console.log("claude key kept:", await page.inputValue("#s-key") === "sk-ant-test", await page.inputValue("#s-model"));
+  // 문항 표
+  await page.click("nav.tabs button[data-tab=table]");
+  console.log("table rows:", await page.locator("#sheet tbody tr[data-id]").count());
+  await page.check("#t-all"); await page.fill("#t-sim", "1"); await page.fill("#t-var", "0"); await page.fill("#t-con", "0");
+  await page.click("#t-gen");
+  await page.waitForFunction(() => /문제 만들기 완료/.test(document.querySelector("#t-status").textContent), null, {timeout: 30000});
+  console.log("bulk:", await page.textContent("#t-status"));
+  await page.screenshot({path: `${OUT}/${MODE}-6-table.png`});
+  await page.click("#t-xlsx"); await page.waitForTimeout(800);
+  await page.click("#btn-zip").catch(() => {});
+  await page.click("nav.tabs button[data-tab=library]"); await page.click("#btn-zip"); await page.waitForTimeout(1500);
 
-  const a = calls.find(c => c.p === "anthropic"), o = calls.find(c => c.p === "openai" && c.body.messages[1].content.some(x => x.type === "image_url")), g = calls.find(c => c.p === "gemini");
-  console.log("anthropic req:", a.h["anthropic-version"], a.h["anthropic-beta"], a.body.fallbacks, a.body.output_config?.format?.type, a.body.thinking?.type);
-  console.log("openai req:", o.body.model, o.body.response_format.type, o.body.response_format.json_schema?.strict, o.h.authorization?.slice(0, 12));
-  console.log("gemini req:", /gemini-test:generateContent\?key=AIza-test/.test(g.url), g.body.generationConfig.responseMimeType);
-  console.log("calls:", calls.length, "errors:", errors.length ? errors : "none");
-  await b.close();
+  if (MODE === "standalone") {
+    await page.click("nav.tabs button[data-tab=settings]");
+    await page.selectOption("#s-provider", "openai"); await page.fill("#s-key", "sk-openai-test");
+    await page.click("#s-list"); await page.waitForFunction(() => /불러왔습니다|못했/.test(document.querySelector("#s-msg").textContent));
+    await page.fill("#s-model", "gpt-test-vision"); await page.click("#s-save");
+    await page.click("#s-test"); await page.waitForFunction(() => /연결되었습니다|오류|못/.test(document.querySelector("#s-msg").textContent));
+    console.log("openai:", await page.textContent("#s-msg"));
+    await page.selectOption("#s-provider", "gemini"); await page.fill("#s-key", "AIza-test"); await page.fill("#s-model", "gemini-test"); await page.click("#s-save");
+    await page.click("#s-test"); await page.waitForFunction(() => /연결되었습니다|오류|못/.test(document.querySelector("#s-msg").textContent));
+    console.log("gemini:", await page.textContent("#s-msg"));
+    await page.selectOption("#s-provider", "anthropic");
+    console.log("claude key kept:", await page.inputValue("#s-key") === "sk-ant-test");
+    const a = calls.find(c => c.p === "anthropic");
+    console.log("anthropic req:", a.h["anthropic-version"], a.h["anthropic-beta"], a.body.fallbacks, a.body.output_config?.format?.type);
+    await page.reload(); await page.click("nav.tabs button[data-tab=library]"); await page.waitForTimeout(400);
+    console.log("after reload:", await page.textContent("#lib-status"));
+    console.log("downloads:", saved.join(", "));
+  } else {
+    console.log("sample calls:", JSON.stringify(await page.evaluate(() => window.__calls.map(c => `${c.imgs}/${c.tier}${c.cache === false ? "/fresh" : ""}`))));
+    console.log("saved:", JSON.stringify(await page.evaluate(() => window.__saved.map(s => s[0]))));
+  }
+  await page.setViewportSize({width: 400, height: 820});
+  await page.click("nav.tabs button[data-tab=library]");
+  console.log("phone scrollWidth:", await page.evaluate(() => document.documentElement.scrollWidth));
+  await page.locator("#grid .card").first().click(); await page.waitForTimeout(300);
+  await page.screenshot({path: `${OUT}/${MODE}-7-phone.png`});
+  await page.click("#detail .close");
+  await page.setViewportSize({width: 1320, height: 920}); await page.emulateMedia({colorScheme: "dark"});
+  await page.locator("#grid .card").nth(1).click(); await page.waitForTimeout(300);
+  await page.screenshot({path: `${OUT}/${MODE}-8-dark.png`});
+  console.log("errors:", errors.length ? errors : "none");
+  await b.close(); if (server) server.close();
 })();

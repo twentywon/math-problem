@@ -1,0 +1,115 @@
+<header class="top gutter">
+  <div class="bar">
+    <h1 class="brand"><span class="pip" aria-hidden="true"></span>모의고사 문제 도우미</h1>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="ingest" aria-selected="true">① PDF 넣기</button>
+      <button role="tab" data-tab="library" aria-selected="false">② 문제 저장소</button>
+      <button role="tab" data-tab="table" aria-selected="false">③ 문항 표</button>
+      <button role="tab" data-tab="settings" aria-selected="false" id="settings-tab">설정</button>
+    </nav>
+    <button class="ai-pill" id="ai-pill" title="AI 상태"><span class="dot" id="ai-dot"></span><span id="ai-label">확인 중…</span></button>
+  </div>
+</header>
+
+<main class="gutter">
+  <!-- ① PDF 넣기 -->
+  <section id="tab-ingest">
+    <div id="drop" class="drop disabled" role="button" tabindex="0" aria-label="PDF 파일 선택">
+      <strong>모의고사 PDF를 여기에 끌어다 놓으세요</strong>
+      <span class="muted">또는 눌러서 파일 선택 (여러 개 가능)</span>
+      <input id="file" type="file" accept="application/pdf,.pdf" multiple hidden>
+    </div>
+    <div class="panel row" style="margin-top:12px">
+      <label for="split-mode">자르기 방식</label>
+      <select id="split-mode">
+        <option value="auto">자동 (텍스트 PDF는 번호 분석, 스캔본은 AI)</option>
+        <option value="text">텍스트 분석만 (AI 사용 안 함)</option>
+        <option value="vision">AI 이미지 인식 (스캔본용)</option>
+      </select>
+      <label><input id="auto-classify" type="checkbox" checked> 자른 뒤 바로 단원 분류·풀이</label>
+      <label><input id="auto-solve" type="checkbox"> 한 번 더 따로 풀어 정답 교차 확인</label>
+    </div>
+    <p id="ingest-note" class="notice" hidden></p>
+    <div id="jobs"></div>
+    <div id="ingest-empty" class="panel empty-state">
+      <h3>이렇게 진행됩니다</h3>
+      <div class="steps-guide">
+        <div><b>1. 자르기</b>각 페이지에서 <span class="qnum">1.</span> <span class="qnum">2.</span> 같은 문항 번호를 찾아 문항별 이미지로 자릅니다.</div>
+        <div><b>2. 공통 자료</b><span class="chip blue">[11~12]</span> 처럼 여러 문항이 함께 쓰는 지문·그림은 해당 문항마다 위에 붙입니다.</div>
+        <div><b>3. 분류·풀이</b>AI가 2022 개정 단원을 정하고 문제를 풀어 정답과 풀이 과정을 남깁니다.</div>
+        <div><b>4. 새 문제</b>저장소에서 문항을 골라 유사·변형·개념연계 문제를 만들고 검산합니다.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ② 문제 저장소 -->
+  <section id="tab-library" hidden>
+    <div class="panel row">
+      <input id="q" type="text" placeholder="검색 (시험명, 개념, 문제 내용)" style="flex:1;min-width:180px" aria-label="검색">
+      <select id="f-exam" aria-label="시험"><option value="">모든 시험</option></select>
+      <select id="f-diff" aria-label="난이도"><option value="">모든 난이도</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+      <button class="btn" id="btn-classify-all">미분류 모두 분류</button>
+      <button class="btn" id="btn-zip">단원별 ZIP 저장</button>
+      <button class="btn" id="btn-folder" hidden>폴더에 단원별 저장</button>
+      <button class="btn" id="btn-import">백업 불러오기</button>
+      <input id="import-file" type="file" accept=".zip" hidden>
+    </div>
+    <div class="lib">
+      <aside class="tree" id="tree" aria-label="단원"></aside>
+      <div style="min-width:0">
+        <div id="lib-status" class="muted" style="margin-bottom:8px"></div>
+        <div id="grid" class="grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ③ 문항 표 -->
+  <section id="tab-table" hidden>
+    <div class="panel">
+      <div class="row">
+        <input id="t-q" type="text" placeholder="검색" style="flex:1;min-width:160px" aria-label="검색">
+        <select id="t-exam" aria-label="시험"><option value="">모든 시험</option></select>
+        <select id="t-subj" aria-label="과목"><option value="">모든 과목</option></select>
+        <select id="t-state" aria-label="상태">
+          <option value="">모든 상태</option>
+          <option value="unclassified">미분류</option>
+          <option value="unsolved">교차 풀이 안 함</option>
+          <option value="mismatch">교차 확인 불일치</option>
+          <option value="wrong">채점 오답</option>
+        </select>
+        <button class="btn" id="t-xlsx">엑셀(.xlsx) 저장</button>
+        <button class="btn" id="t-csv">CSV 저장</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <span class="muted" id="t-sel">선택 0개</span>
+        <button class="btn sm" id="t-classify">선택 문항 분류</button>
+        <button class="btn sm" id="t-solve">선택 문항 AI 풀이</button>
+        <span class="muted">|</span>
+        <label>유사 <input type="number" id="t-sim" min="0" max="6" value="2"></label>
+        <label>변형 <input type="number" id="t-var" min="0" max="6" value="1"></label>
+        <label>개념연계 <input type="number" id="t-con" min="0" max="6" value="1"></label>
+        <label><input type="checkbox" id="t-verify" checked> 검산</label>
+        <button class="btn primary sm" id="t-gen">선택 문항 문제 만들기</button>
+      </div>
+      <div class="muted" id="t-status" style="margin-top:8px" role="status"></div>
+    </div>
+    <div class="tablewrap"><table class="sheet" id="sheet"></table></div>
+  </section>
+
+  <!-- 설정 / 정보 -->
+  <section id="tab-settings" hidden>
+    <div id="settings-root"></div>
+    <div class="panel">
+      <h2 style="font-size:18px;margin-bottom:6px">데이터</h2>
+      <p id="store-desc" class="muted"></p>
+      <p id="store-stats"></p>
+      <button class="btn danger" id="btn-wipe">모든 데이터 삭제</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="detail" aria-label="문항 상세"></dialog>
+<dialog id="zoom" style="width:auto"><img id="zoom-img" alt="페이지 확대"></dialog>
+<dialog id="confirm" style="width:auto"><div class="confirm-box"><p id="confirm-msg" style="margin:0"></p>
+  <div class="row" style="justify-content:flex-end"><button class="btn" id="confirm-no">취소</button><button class="btn primary" id="confirm-yes">확인</button></div></div></dialog>
+<div id="toast" hidden role="status"></div>

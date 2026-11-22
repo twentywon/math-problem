@@ -138,11 +138,8 @@ def detect_columns(page: pymupdf.Page, lines: list[_Line]) -> list[Column]:
         return [Column(0, W)]
     left = min(ln.x0 for ln in usable)
     right = max(ln.x1 for ln in usable)
-    cover = [0] * (int(W) + 2)
-    for ln in usable:
-        for x in range(max(0, int(ln.x0)), min(len(cover), int(ln.x1) + 1)):
-            cover[x] += 1
     lo, hi = int(W * 0.3), int(W * 0.7)
+    cover: list[int] = []  # 아래 tries 에서 채운다
 
     def find_gap(tol: int) -> tuple[int, int]:
         best = (0, 0)  # (길이, 시작)
@@ -157,10 +154,35 @@ def detect_columns(page: pymupdf.Page, lines: list[_Line]) -> list[Column]:
                 run_start = None
         return best
 
-    # 완전히 빈 띠를 먼저 찾고, 없으면 가운데를 가로지르는 줄이 몇 개 있어도 허용
-    best = find_gap(0)
+    def coverage(subset: list[_Line]) -> list[int]:
+        cov = [0] * (int(W) + 2)
+        for ln in subset:
+            for x in range(max(0, int(ln.x0)), min(len(cov), int(ln.x1) + 1)):
+                cov[x] += 1
+        return cov
+
+    # 단 사이 빈 띠를 여러 방법으로 찾는다. 첫 쪽의 큰 시험 제목처럼 가운데를 가로지르는 줄이 띠를 가릴 수 있다.
+    straddle = [ln for ln in usable if ln.x0 < W / 2 - 4 and ln.x1 > W / 2 + 4]
+    tries = [(usable, 0), ([ln for ln in usable if ln.y0 > 0.25 * H], 0)]
+    if len(straddle) <= 0.25 * len(usable):
+        tries.append(([ln for ln in usable if ln not in straddle], 0))
+    tries.append((usable, int(0.03 * len(usable))))
+    best = (0, 0)
+    for subset, tol in tries:
+        if len(subset) < 6:
+            continue
+        cover = coverage(subset)
+        best = find_gap(tol)
+        if best[0] >= 8:
+            break
     if best[0] < 8:
-        best = find_gap(int(0.03 * len(usable)))
+        # 마지막으로 문항 번호 위치로 판단: 왼쪽 끝과 가운데 오른쪽에 모두 "n." 으로 시작하는 줄이 있으면 2단
+        marks = [ln for ln in lines if _MARKER_RE.match(ln.text) and 0.08 * H < ln.y0 and ln.y1 < 0.92 * H]
+        lefts = [ln.x0 for ln in marks if ln.x0 < 0.3 * W]
+        rights = [ln.x0 for ln in marks if 0.42 * W < ln.x0 < 0.75 * W]
+        if lefts and rights:
+            rx = min(rights)
+            return [Column(max(0, left - 4), rx - 8), Column(rx - 4, min(W, right + 4))]
     if best[0] >= 8:
         # 단 경계는 빈 띠의 가운데(구분선 자리)에서 3pt 떨어진 곳: 글자 폭 오차로 끝 글자가 잘리지 않게
         mid = best[1] + best[0] / 2
@@ -186,8 +208,10 @@ def _footer_tops(page: pymupdf.Page, lines: list[_Line], columns: list[Column]) 
             if not (ln.y0 > 0.85 * H or is_notice):
                 continue
         elif _PAGE_NUMBER_RE.match(ln.text):
-            # 그래프 눈금 숫자와 헷갈리지 않도록 쪽 번호는 맨 아래 띠에 있을 때만
-            if ln.y0 <= 0.93 * H:
+            # 쪽 번호: 맨 아래 띠, 또는 아래쪽 가운데·바깥 가장자리 (그래프 눈금 숫자와 구분)
+            cx = (ln.x0 + ln.x1) / 2
+            placed = abs(cx - page.rect.width / 2) < 0.12 * page.rect.width or cx < 0.12 * page.rect.width or cx > 0.88 * page.rect.width
+            if not (ln.y0 > 0.93 * H or (ln.y0 > 0.87 * H and placed)):
                 continue
         else:
             continue
