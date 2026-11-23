@@ -174,12 +174,9 @@ button.bubble.mine:hover:not(.fill){background:var(--hover)}
 .seg-mini{display:inline-flex;border:1px solid var(--rule);border-radius:7px;overflow:hidden}
 .seg-mini button{border:0;background:none;padding:3px 10px;font-size:13px;cursor:pointer;color:var(--muted)}
 .seg-mini button[aria-pressed="true"]{background:var(--sunken);color:var(--ink);font-weight:600}
-ol.steps{list-style:none;margin:0;padding:0;counter-reset:step;display:grid;gap:0}
-ol.steps li{counter-increment:step;position:relative;padding:2px 0 14px 40px;min-width:0}
-ol.steps li::before{content:counter(step);position:absolute;left:0;top:0;width:26px;height:26px;border-radius:50%;background:var(--blue-weak);color:var(--blue);font-family:var(--font-num);font-size:13px;display:flex;align-items:center;justify-content:center;font-weight:600}
-ol.steps li::after{content:"";position:absolute;left:12.5px;top:28px;bottom:2px;width:1px;background:var(--rule)}
-ol.steps li:last-child::after{display:none}
-ol.steps li:last-child{padding-bottom:2px}
+/* 풀이 과정: 줄 앞 번호 없이 한 줄씩 */
+ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+ol.steps li{min-width:0}
 
 /* ---------- 문항 상세 ---------- */
 dialog{border:1px solid var(--rule);border-radius:14px;padding:0;background:var(--surface);color:var(--ink)}
@@ -2773,7 +2770,7 @@ $("#mb-zip").onclick = async () => {
     for (const [i, e] of list.entries()) {
       b.textContent = `이미지 만드는 중… ${i + 1}/${list.length}`;
       zip.file(madeFileName(e, i) + ".png", await paperBlob(e.g, i + 1));
-      zip.file(madeFileName(e, i) + ".txt", genText(e.g, i + 1) + `${e.g.references?.length ? `\n\n[참고한 문항] ${e.g.references.map(r => r.label).join(", ")}` : ""}\n\n[정답] ${e.g.answer}\n[풀이]\n${(e.g.solution_steps || []).map((x, k) => `${k + 1}. ${x}`).join("\n")}`);
+      zip.file(madeFileName(e, i) + ".txt", genText(e.g, i + 1) + `${e.g.references?.length ? `\n\n[참고한 문항] ${e.g.references.map(r => r.label).join(", ")}` : ""}\n\n[정답] ${e.g.answer}\n[풀이]\n${(e.g.solution_steps || []).join("\n")}`);
     }
     await saveFile(`만든문제_${new Date().toISOString().slice(0, 10)}.zip`, await zip.generateAsync({type: "blob"}));
   } catch (err) { toast(err.message); }
@@ -2897,7 +2894,7 @@ async function worksheetHTML(p) {
     return `<section class="q"><h2>${i + 1}. ${esc(g.title)} <small>${esc(g.kind)}</small></h2><div>${escBr(g.statement)}</div>
       ${g.figure_svg ? `<div class="fig">${g.figure_svg}</div>` : g.figure_description ? `<p class="m">[그림] ${escBr(g.figure_description)}</p>` : ""}
       ${g.choices?.length ? `<ol class="ch">${g.choices.map((ch, j) => `<li>${MARKS[j]} ${escBr(ch)}</li>`).join("")}</ol>` : ""}
-      <details><summary>정답과 풀이</summary><p><b>정답</b> ${esc(g.answer)}</p><ol>${steps.map(s => `<li>${escBr(s)}</li>`).join("")}</ol></details></section>`;
+      <details><summary>정답과 풀이</summary><p><b>정답</b> ${esc(g.answer)}</p>${steps.map(s => `<p class="st">${escBr(s)}</p>`).join("")}</details></section>`;
   }).join("\n");
   return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(p.examTitle)} ${p.number}번 연계 문제</title>

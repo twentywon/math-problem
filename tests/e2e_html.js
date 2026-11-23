@@ -217,6 +217,9 @@ const sse = obj => {
   await page.locator("#grid .card", {hasText: "11"}).first().click();
   await page.waitForTimeout(400);
   console.log("detail bubbles filled:", await page.locator("#detail .answer-card .bubble.fill").count(), "steps:", await page.locator("#detail ol.steps li").count());
+  // 풀이 줄 앞에 번호를 붙이지 않는다
+  const stepMarks = await page.evaluate(() => [...document.querySelectorAll("#detail ol.steps li")].map(li => getComputedStyle(li, "::before").content).filter(c => c && c !== "none" && c !== "normal"));
+  if (stepMarks.length) fails.push("풀이 줄 번호가 남아 있음: " + stepMarks);
   await page.locator("#detail [data-pick='3']").click(); await page.waitForTimeout(200);
   console.log("grade chip:", await page.locator("#detail .answer-card .chip.ok, #detail .answer-card .chip.bad").last().textContent());
   await page.screenshot({path: `${OUT}/${MODE}-3-answer.png`});
