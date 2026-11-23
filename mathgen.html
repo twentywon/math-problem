@@ -1560,31 +1560,36 @@ function bindGenTools(root, getItems, fileName) {
   const genOf = b => { const i = +b.closest(".gen").dataset.i; return [getItems()[i], i]; };
   const imgCache = new Map();
   const genImage = async (g, i) => { if (!imgCache.has(i)) imgCache.set(i, await paperBlob(g, i + 1)); return imgCache.get(i); };
+  // 카드를 '이미지' 보기로 바꾸고 시험지 모양 이미지를 보여 준다 (저장·복사할 때도 무엇이 저장되는지 보이게)
+  const showImage = async (card, g, i) => {
+    card.querySelectorAll(".g-view button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.v === "image")));
+    card.querySelector(".g-text").hidden = true; card.querySelector(".g-image").hidden = false;
+    if (card.querySelector(".g-image img")) return genImage(g, i);
+    const blob = await genImage(g, i), url = await blobToDataURL(blob);
+    card.querySelector(".g-image").innerHTML = `<img src="${url}" alt="${i + 1}번 만든 문제 이미지" class="gen-img">`;
+    card.querySelector(".gen-img").onclick = () => { $("#zoom-img").src = url; $("#zoom").showModal(); };
+    return blob;
+  };
+  const failImage = (card, e) => { card.querySelector(".g-image").hidden = false; card.querySelector(".g-text").hidden = true; card.querySelector(".g-image").innerHTML = `<p class="notice">${esc(e.message)}</p>`; };
   root.querySelectorAll(".g-view button").forEach(b => b.onclick = async () => {
-    const card = b.closest(".gen"), [g, i] = genOf(b), img = b.dataset.v === "image";
+    const card = b.closest(".gen"), [g, i] = genOf(b);
+    if (b.dataset.v === "image") { try { await showImage(card, g, i); } catch (e) { failImage(card, e); } return; }
     card.querySelectorAll(".g-view button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
-    card.querySelector(".g-text").hidden = img; card.querySelector(".g-image").hidden = !img;
-    if (img && !card.querySelector(".g-image img")) {
-      try {
-        const url = await blobToDataURL(await genImage(g, i));
-        card.querySelector(".g-image").innerHTML = `<img src="${url}" alt="${i + 1}번 만든 문제 이미지" class="gen-img">`;
-        card.querySelector(".gen-img").onclick = () => { $("#zoom-img").src = url; $("#zoom").showModal(); };
-      } catch (e) { card.querySelector(".g-image").innerHTML = `<p class="notice">${esc(e.message)}</p>`; }
-    }
+    card.querySelector(".g-text").hidden = false; card.querySelector(".g-image").hidden = true;
   });
   root.querySelectorAll(".g-copy-text").forEach(b => b.onclick = async () => { const [g, i] = genOf(b); toast(await copyText(genText(g, i + 1)) ? "문제 텍스트를 복사했습니다 (수식은 LaTeX)" : "복사하지 못했습니다"); });
   root.querySelectorAll(".g-copy-img").forEach(b => b.onclick = async () => {
-    const [g, i] = genOf(b);
+    const card = b.closest(".gen"), [g, i] = genOf(b);
     try {
-      const blob = await genImage(g, i);
-      if (await copyImage(blob)) toast("문제 이미지를 복사했습니다");
+      const blob = await showImage(card, g, i);
+      if (await copyImage(blob)) toast("이 이미지를 복사했습니다");
       else if (PLATFORM.canSave()) await saveFile(fileName(g, i) + ".png", blob);
       else toast("이 화면에서는 이미지를 복사할 수 없습니다");
-    } catch (e) { toast(e.message); }
+    } catch (e) { failImage(card, e); toast(e.message); }
   });
   root.querySelectorAll(".g-save-img").forEach(b => b.onclick = async () => {
-    const [g, i] = genOf(b);
-    try { await saveFile(fileName(g, i) + ".png", await genImage(g, i)); } catch (e) { toast(e.message); }
+    const card = b.closest(".gen"), [g, i] = genOf(b);
+    try { await saveFile(fileName(g, i) + ".png", await showImage(card, g, i)); } catch (e) { failImage(card, e); toast(e.message); }
   });
   return genImage;
 }

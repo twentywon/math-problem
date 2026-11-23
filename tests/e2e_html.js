@@ -461,6 +461,17 @@ const sse = obj => {
   console.log("reference chip:", chipText, "->", (opened || "").slice(0, 60));
   if (!opened || !opened.includes(chipText.replace(/.* (\d+)번$/, "$1"))) fails.push("참고 문항 칩 열기");
   await page.click("#detail .close");
+  // 이미지 저장을 누르면 저장되는 이미지가 그 카드에 보인다
+  const card2 = page.locator("#mk-results .gen").nth(1);
+  const savedBefore = MODE === "html" ? 0 : await page.evaluate(() => window.__saved.length);
+  const dl = MODE === "html" ? page.waitForEvent("download", {timeout: 15000}) : null;
+  await card2.locator(".g-save-img").click();
+  if (dl) await dl; else await page.waitForFunction(n => window.__saved.length > n, savedBefore, {timeout: 15000});
+  await page.waitForTimeout(200);
+  const shownImg = await card2.evaluate(c => [!c.querySelector(".g-image").hidden, c.querySelector(".g-text").hidden, !!c.querySelector(".g-image img.gen-img")?.naturalWidth,
+    c.querySelector('.g-view button[data-v="image"]').getAttribute("aria-pressed")]);
+  console.log("save image shows image:", JSON.stringify(shownImg));
+  if (shownImg.join() !== "true,true,true,true") fails.push("이미지 저장 때 이미지 보이기: " + shownImg);
   await page.screenshot({path: `${OUT}/${MODE}-11-make.png`, fullPage: true});
   // ⑤ AI 생성 문제: 원본 문항에서 만든 문제도 함께 보이고, 단원 트리·거르기·삭제가 된다
   await page.click("nav.tabs button[data-tab=ai]"); await page.waitForTimeout(200);
