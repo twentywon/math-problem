@@ -2550,15 +2550,39 @@ function makeScope() {
   const t = TREE.find(x => x[0] === subj);
   return {ids, label: chap ? `${t[1]} > ${t[2][chap - 1][0]}` : t[1]};
 }
-// 형식 참고용 실제 문항: 고른 범위 → 같은 과목 → 전체 순으로 찾는다 (AI 가 만든 출처는 빼서 스스로를 베끼지 않게)
-function styleRefs(scope, diff) {
+// 출처의 시기: 이름에 있는 연도·월(예: "2024 고1 3월", "2023년 6월 모의고사")을 먼저 보고, 없으면 넣은 날짜
+function examTime(ex) {
+  const title = str(ex?.title), y = title.match(/(?:^|\D)(20\d{2}|19\d{2})(?:\D|$)/);
+  if (y) { const m = title.match(/(?:^|\D)(1[0-2]|0?[1-9])\s*월/); return Date.UTC(+y[1], m ? +m[1] - 1 : 0, 1); }
+  const d = Date.parse(ex?.updatedAt || ex?.replacedAt || ex?.addedAt || "");
+  return Number.isFinite(d) ? d : 0;
+}
+// 형식 참고용 실제 문항 고르기
+// 1) 범위: 고른 중단원 → 같은 대단원 → 같은 과목 → 저장소 전체 순으로, 문항이 있는 첫 범위
+// 2) 하나씩 차례로 뽑는다. 점수(낮을수록 먼저) = 난이도 차이 + 최신일수록 감점 적게 + 고른 유형과 다르면 가산
+//    + 이미 뽑힌 같은 출처 문항 수만큼 가산(한 출처에 몰리지 않게, 개수 제한은 없음) + 작은 무작위(같은 조건이면 매번 다르게)
+const REF_WEIGHT = {diff: 1, recent: 1.5, type: 1.5, sameSource: 1, jitter: 0.3};
+function styleRefs(scope, diff, type = "auto", count = 4) {
   const real = [...state.problems.values()].filter(p => p.classification?.transcription && state.exams.get(p.examId)?.kind !== "generated");
-  const subj = scope.ids[0].split("-")[0];
-  const pools = [real.filter(p => scope.ids.includes(p.unitId)), real.filter(p => str(p.unitId).startsWith(subj + "-")), real];
+  const [subj, chap] = scope.ids[0].split("-");
+  const chapIds = scope.ids.every(id => id.startsWith(`${subj}-${chap}-`)) ? `${subj}-${chap}-` : null;
+  const pools = [real.filter(p => scope.ids.includes(p.unitId)), chapIds ? real.filter(p => str(p.unitId).startsWith(chapIds)) : [],
+    real.filter(p => str(p.unitId).startsWith(subj + "-")), real];
   const at = pools.findIndex(x => x.length), pool = at < 0 ? [] : pools[at];
-  const target = diff === "mix" ? 3 : +diff;
-  const picked = [...pool].sort((a, b) => Math.abs((diffLevel(a) || 3) - target) - Math.abs((diffLevel(b) || 3) - target) || byName(a.examTitle, b.examTitle) || a.order - b.order).slice(0, 4);
-  return {pool, picked, where: ["고른 단원", "같은 과목", "저장소 전체"][at] || ""};
+  const target = diff === "mix" ? 3 : +diff, wantType = ["5지선다", "단답형"].includes(type) ? type : null;
+  // 최신 순위: 0(가장 최근) ~ 1(가장 오래됨)
+  const times = [...new Set(pool.map(p => examTime(state.exams.get(p.examId))))].sort((x, y) => y - x);
+  const age = p => times.length > 1 ? times.indexOf(examTime(state.exams.get(p.examId))) / (times.length - 1) : 0;
+  const base = new Map(pool.map(p => [p.id, REF_WEIGHT.diff * Math.abs((diffLevel(p) || 3) - target) + REF_WEIGHT.recent * age(p)
+    + (wantType && qType(p) !== wantType ? REF_WEIGHT.type : 0) + REF_WEIGHT.jitter * Math.random()]));
+  const picked = [], fromSource = new Map(), left = [...pool];
+  while (picked.length < count && left.length) {
+    let best = 0, bestCost = Infinity;
+    left.forEach((p, k) => { const c = base.get(p.id) + REF_WEIGHT.sameSource * (fromSource.get(p.examId) || 0); if (c < bestCost) { bestCost = c; best = k; } });
+    const p = left.splice(best, 1)[0];
+    picked.push(p); fromSource.set(p.examId, (fromSource.get(p.examId) || 0) + 1);
+  }
+  return {pool, picked, where: ["고른 단원", "같은 대단원", "같은 과목", "저장소 전체"][at] || ""};
 }
 // 저장된 문항의 형식 요약 (유형·<보기>형·그림·배점 비율)
 function styleProfile(pool) {
@@ -2800,7 +2824,7 @@ $("#mk-go").onclick = async () => {
   const status = t => { $("#mk-status").textContent = t; };
   try {
     makeState.fresh = new Set();
-    const made = [], rejected = [], refs = styleRefs(scope, diff);
+    const made = [], rejected = [], refs = styleRefs(scope, diff, type);
     const refImages = await Promise.all(refs.picked.slice(0, 3).map(p => problemBlob(p).catch(() => null))).then(a => a.filter(Boolean));
     // 겹침 검사 대상: 저장된 모든 문항 + 이번에 만든 문제
     const seen = [...state.problems.values()].filter(p => p.classification?.transcription).map(p => ({text: p.classification.transcription, label: `${p.examTitle} ${p.number}번`}))

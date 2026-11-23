@@ -473,6 +473,47 @@ const sse = obj => {
   console.log("save image shows image:", JSON.stringify(shownImg));
   if (shownImg.join() !== "true,true,true,true") fails.push("이미지 저장 때 이미지 보이기: " + shownImg);
   await page.screenshot({path: `${OUT}/${MODE}-11-make.png`, fullPage: true});
+  // 참고 문항 선정 규칙: 대단원 범위, 최신 위주, 한 출처에 몰리지 않음(제한 없음), 유형 우선
+  const algo = await page.evaluate(() => {
+    const keep = [state.problems, state.exams];
+    const ex = (id, title, addedAt) => ({id, title, kind: "pdf", addedAt});
+    const P = (id, examId, unitId, type, score, number) => ({id, examId, examTitle: examId, number, order: number, unitId,
+      classification: {transcription: id + " 문제", question_type: type, difficulty_score: score}});
+    const run = (exams, probs, scope, diff, type) => {
+      state.exams = new Map(exams.map(e => [e.id, e])); state.problems = new Map(probs.map(p => [p.id, p])); state.rev++;
+      const r = styleRefs(scope, diff, type); return {where: r.where, ids: r.picked.map(p => p.id)};
+    };
+    const out = {};
+    try {
+      // ① 고른 중단원(ALG-1-2)에 문항이 없으면 같은 대단원(ALG-1-*)에서, 다른 대단원(ALG-2-*)은 쓰지 않음
+      out.chapter = run([ex("e1", "2024 고2 3월", "2026-01-01")],
+        [P("a1", "e1", "ALG-1-1", "5지선다", 6, 1), P("a2", "e1", "ALG-2-1", "5지선다", 6, 2)], {ids: ["ALG-1-2"]}, "3", "auto");
+      // ② 최신 위주: 같은 조건이면 2024 년 출처가 2015 년보다 먼저
+      const old = ex("old", "2015 고1 3월", "2026-11-01"), neu = ex("new", "2024 고1 3월", "2026-01-01");
+      out.recent = run([old, neu], [P("o1", "old", "CM1-1-1", "5지선다", 6, 1), P("n1", "new", "CM1-1-1", "5지선다", 6, 1)], {ids: ["CM1-1-1"]}, "3", "auto");
+      // ③ 한 출처에 몰리지 않음: 최신 출처 A 에 6문항, B 에 2문항이면 B 도 뽑힘 / 출처가 하나뿐이면 그 출처에서 4개 모두
+      const A = ex("A", "2024 고1 6월", ""), B = ex("B", "2023 고1 6월", "");
+      const many = [1, 2, 3, 4, 5, 6].map(k => P("A" + k, "A", "CM1-1-1", "5지선다", 6, k)).concat([P("B1", "B", "CM1-1-1", "5지선다", 6, 1), P("B2", "B", "CM1-1-1", "5지선다", 6, 2)]);
+      out.spread = run([A, B], many, {ids: ["CM1-1-1"]}, "3", "auto");
+      out.single = run([A], many.filter(p => p.examId === "A"), {ids: ["CM1-1-1"]}, "3", "auto");
+      // ④ 유형 우선: 단답형을 고르면 단답형이 먼저
+      out.type = run([A], [P("m1", "A", "CM1-1-1", "5지선다", 6, 1), P("m2", "A", "CM1-1-1", "5지선다", 6, 2), P("s1", "A", "CM1-1-1", "단답형", 6, 3)], {ids: ["CM1-1-1"]}, "3", "단답형");
+      // ⑤ 같은 조건이면 매번 순서가 바뀔 수 있음 (무작위)
+      const seen = new Set();
+      for (let k = 0; k < 30; k++) seen.add(run([A], many.filter(p => p.examId === "A"), {ids: ["CM1-1-1"]}, "3", "auto").ids.join());
+      out.varies = seen.size;
+    } finally { [state.problems, state.exams] = keep; state.rev++; }
+    return out;
+  });
+  console.log("reference algorithm:", JSON.stringify(algo));
+  const srcCount = (ids, src) => ids.filter(x => x.startsWith(src)).length;
+  if (algo.chapter.where !== "같은 대단원" || algo.chapter.ids.join() !== "a1") fails.push("참고 문항: 대단원 범위 " + JSON.stringify(algo.chapter));
+  if (algo.recent.ids[0] !== "n1") fails.push("참고 문항: 최신 위주 " + JSON.stringify(algo.recent));
+  if (algo.spread.ids.length !== 4 || srcCount(algo.spread.ids, "B") < 1 || srcCount(algo.spread.ids, "A") < 2) fails.push("참고 문항: 출처 고르게 " + JSON.stringify(algo.spread));
+  if (algo.single.ids.length !== 4) fails.push("참고 문항: 출처 하나면 제한 없이 " + JSON.stringify(algo.single));
+  if (algo.type.ids[0] !== "s1") fails.push("참고 문항: 유형 우선 " + JSON.stringify(algo.type));
+  if (algo.varies < 2) fails.push("참고 문항: 동점 무작위 " + algo.varies);
+
   // ⑤ AI 생성 문제: 원본 문항에서 만든 문제도 함께 보이고, 단원 트리·거르기·삭제가 된다
   await page.click("nav.tabs button[data-tab=ai]"); await page.waitForTimeout(200);
   const box = await page.evaluate(() => [madeEntries().length, madeEntries().filter(e => e.from === "derived").length]);
