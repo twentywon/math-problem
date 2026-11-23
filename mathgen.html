@@ -212,6 +212,8 @@ dialog#detail{overflow:hidden}
 .gen h4{font-size:16px}
 .g-view{justify-self:start}
 .make-form{display:grid;gap:12px}
+.g-diff-wrap{display:inline-flex;align-items:center;gap:6px}
+select.g-diff{padding:1px 4px;font-size:13px}
 .diff-set{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:6px}
 .diff-set .btn{min-width:32px}
 select.dsel{padding:2px 4px;font-size:13px;min-width:64px}
@@ -1596,8 +1598,29 @@ async function paperBlob(g, no) {
     return await canvasToBlob(canvas);
   } finally { host.remove(); }
 }
+// 만든 문제의 난이도를 바꾼 사본 (AI 가 처음 매긴 값은 difficultyAI 로 남긴다. AI 값으로 되돌리면 직접 정함 표시를 뗀다)
+function withGenDiff(g, level) {
+  const ai = g.difficultyManual ? Number(g.difficultyAI) : Number(g.difficulty);
+  return level === ai ? {...g, difficulty: ai, difficultyManual: false, difficultyAI: undefined, difficultyAt: undefined}
+    : {...g, difficulty: level, difficultyManual: true, difficultyAI: ai, difficultyAt: new Date().toISOString()};
+}
+// 선생님이 다시 정한 만든 문제들 → 문제를 만들 때 함께 보내는 난이도 보정 기준 (같은 과목 먼저, 최근 것 먼저, 최대 6개)
+function genDiffCalibration(subj = "") {
+  const all = [...state.made.values()].map(m => m.g).concat([...state.problems.values()].flatMap(p => p.generated || []))
+    .filter(g => g?.difficultyManual && Number(g.difficultyAI) >= 1);
+  if (!all.length) return "";
+  const off = all.reduce((sum, g) => sum + (g.difficulty - g.difficultyAI), 0) / all.length;
+  const pick = [...all].sort((a, b) => (String(b.unit_id).startsWith(subj + "-") - String(a.unit_id).startsWith(subj + "-")) || str(b.difficultyAt).localeCompare(str(a.difficultyAt))).slice(0, 6);
+  return `[난이도 보정] 선생님이 AI 가 만든 문제의 난이도를 직접 다시 정한 예 ${all.length}개 중 일부다. 선생님은 평균적으로 AI 보다 ${off >= 0 ? "+" : ""}${off.toFixed(1)}단계로 본다. 이 차이를 반영해 새 문제의 실제 난이도가 선생님 기준의 목표 난이도에 맞도록 만들고, difficulty 도 선생님 기준으로 매겨라.\n` +
+    pick.map(g => `- AI ${g.difficultyAI}/5 → 선생님 ${g.difficulty}/5 (${UNITS[g.unit_id]?.section || "단원 없음"}) ${g.title}: ${str(g.statement).replace(/\s+/g, " ").slice(0, 120)}`).join("\n");
+}
 // 만든 문제 카드(.gen)의 텍스트/이미지 보기, 텍스트·이미지 복사, 이미지 저장 버튼을 연결한다. 이미지 만드는 함수를 돌려준다
-function bindGenTools(root, getItems, fileName) {
+// onDiff(g, i, level): 카드에서 난이도를 바꿨을 때 저장하는 방법 (없으면 난이도 고르기를 쓰지 않음)
+function bindGenTools(root, getItems, fileName, onDiff) {
+  root.querySelectorAll(".g-diff").forEach(sel => {
+    if (!onDiff) { sel.disabled = true; return; }
+    sel.onchange = async () => { const i = +sel.closest(".gen").dataset.i, g = getItems()[i]; if (g) { await onDiff(g, i, Number(sel.value)); toast(`난이도를 ${sel.value}로 정했습니다 · 다음에 문제를 만들 때 기준으로 씁니다`); } };
+  });
   const genOf = b => { const i = +b.closest(".gen").dataset.i; return [getItems()[i], i]; };
   const imgCache = new Map();
   const genImage = async (g, i) => { if (!imgCache.has(i)) imgCache.set(i, await paperBlob(g, i + 1)); return imgCache.get(i); };
@@ -1669,7 +1692,7 @@ async function generateFor(id, counts, extra, verify, log = () => {}) {
   if (!p.classification) { log("먼저 단원을 분류하는 중…"); p = await classifyOne(id); }
   log("문제를 만드는 중… (1~3분 걸릴 수 있습니다)");
   const data = await ask({system: GEN_SYSTEM, schema: GEN_SCHEMA, effort: "high", images: [await problemBlob(p)], fresh: true,
-    text: `${originalText(p)}\n(원본 문제 이미지를 함께 보낸다.)\n\n위 원본 문제를 바탕으로 다음을 만들어라: ${wanted}. 각 문제의 kind 를 정확히 표시하라.${extra ? `\n추가 요청: ${extra}` : ""}`});
+    text: `${originalText(p)}\n(원본 문제 이미지를 함께 보낸다.)\n\n위 원본 문제를 바탕으로 다음을 만들어라: ${wanted}. 각 문제의 kind 를 정확히 표시하라.${extra ? `\n추가 요청: ${extra}` : ""}${(() => { const c = genDiffCalibration(str(p.unitId).split("-")[0]); return c ? "\n\n" + c : ""; })()}`});
   const made = (Array.isArray(data?.problems) ? data.problems : Array.isArray(data) ? data : []).map(cleanGenerated).filter(Boolean);
   if (!made.length) throw new Error("AI 가 문제를 돌려주지 않았습니다. 다시 시도하세요.");
   if (verify) { log(`검산 중… (${made.length}문제를 처음 보는 사람처럼 다시 풉니다)`); await verifyMade(made); }
@@ -2491,7 +2514,9 @@ function genCardHTML(g, i) {
   const type = g.choices?.length ? "5지선다" : "단답형", v = g.verification;
   return `<article class="gen" data-i="${i}">
     <div class="row"><span class="chip red">${esc(g.kind)}</span>${g.unit_id ? `<span class="chip">${esc(UNITS[g.unit_id]?.section || "")}</span>` : ""}
-      <span class="dots">${dots(g.difficulty)}</span>${verifyChip(v)}<span class="spacer"></span>${canEdit() ? `<button class="btn sm danger g-del">삭제</button>` : ""}</div>
+      ${canEdit() ? `<label class="g-diff-wrap" title="난이도를 직접 정하면 다음에 문제를 만들 때 난이도 기준으로 씁니다"><span class="dots">${dots(g.difficulty)}</span>
+        <select class="g-diff" aria-label="${i + 1}번 만든 문제 난이도">${[1, 2, 3, 4, 5].map(k => `<option value="${k}" ${Number(g.difficulty) === k ? "selected" : ""}>${k}${g.difficultyManual && Number(g.difficultyAI) === k ? " (AI)" : ""}</option>`).join("")}</select></label>${g.difficultyManual ? `<span class="chip" title="AI 가 매긴 난이도 ${esc(g.difficultyAI)}">직접 정함 · AI ${esc(g.difficultyAI)}</span>` : ""}`
+        : `<span class="dots">${dots(g.difficulty)}</span>`}${verifyChip(v)}<span class="spacer"></span>${canEdit() ? `<button class="btn sm danger g-del">삭제</button>` : ""}</div>
     <h4>${i + 1}. ${esc(g.title)}</h4>
     ${g.references?.length ? `<div class="refs"><span class="muted">${g.referencesGuessed ? "함께 보낸 참고 문항" : "참고한 문항"}</span>${g.references.map(r =>
       `<button class="chip ref-open" data-ref-id="${esc(r.id)}" title="${esc(r.unit || "")}">${esc(r.label)}</button>`).join("")}</div>` : ""}
@@ -2580,7 +2605,9 @@ function bindDetail(p) {
     await saveProblem({...x, generated: (x.generated || []).filter((_, k) => k !== i)}); renderDetail();
   });
   // 만든 문제: 텍스트·이미지 보기, 복사, 저장
-  const genImage = bindGenTools(d, () => cur().generated || [], (g, i) => genFileName(cur(), g, i));
+  const genImage = bindGenTools(d, () => cur().generated || [], (g, i) => genFileName(cur(), g, i), async (g, i, level) => {
+    const x = cur(); await saveProblem({...x, generated: (x.generated || []).map((y, k) => (k === i ? withGenDiff(y, level) : y))}); renderDetail();
+  });
   if (q(".save-gen-imgs")) q(".save-gen-imgs").onclick = async () => {
     const b = q(".save-gen-imgs"), p0 = cur(), zip = new JSZip(); b.disabled = true;
     try {
@@ -2765,7 +2792,16 @@ function renderGenList(box, shown, emptyText, after) {
     `<article class="gen${makeState.fresh.has(e.key) ? " fresh" : ""}" data-key="${esc(e.key)}"`).replace("</h4>", ` <small class="muted">${esc(e.origin)}</small></h4>`)).join("")
     : `<p class="muted">${emptyText}</p>`;
   renderMath(box);
-  bindGenTools(box, () => shown.map(e => e.g), (g, i) => madeFileName(shown[i], i));
+  bindGenTools(box, () => shown.map(e => e.g), (g, i) => madeFileName(shown[i], i), async (g, i, level) => {
+    const e = shown[i]; if (!e) return;
+    if (e.from === "make") { const m = state.made.get(e.madeId); if (m) await PLATFORM.store.putMade({...m, g: withGenDiff(m.g, level)}); }
+    else {
+      const p = state.problems.get(e.problemId), sig = genSig(e.g); if (!p) return;
+      let done = false;
+      await saveProblem({...p, generated: (p.generated || []).map(y => { if (!done && genSig(y) === sig) { done = true; return withGenDiff(y, level); } return y; })});
+    }
+    after();
+  });
   box.querySelectorAll(".ref-open").forEach(b => b.onclick = () => {
     const id = b.dataset.refId;
     if (state.problems.has(id)) openDetail(id, [id]); else toast("그 문항은 문제 저장소에서 삭제되었습니다");
@@ -2913,7 +2949,7 @@ $("#mk-go").onclick = async () => {
         made.length ? `이미 만든 문제와 겹치지 않게 다른 상황·수치·접근으로 만든다. 이미 만든 제목: ${made.map(g => g.title).join(", ")}` : "",
         rejected.length ? `다음 문제는 저장된 문항을 거의 그대로 옮겨서 버렸다. 이렇게 만들지 마라: ${rejected.map(r => r.title).join(", ")}` : "",
         calcRejected.length ? `다음 문제는 계산 위주라 버렸다. 계산을 줄이고 핵심 관찰 하나로 풀리게 만들어라: ${calcRejected.join(", ")}` : "",
-        extra ? `추가 요청: ${extra}` : "", refText, anchorText(new Set())].filter(Boolean).join("\n")});
+        extra ? `추가 요청: ${extra}` : "", refText, anchorText(new Set()), genDiffCalibration(scope.ids[0].split("-")[0])].filter(Boolean).join("\n")});
       const got = (Array.isArray(data?.problems) ? data.problems : []).map(cleanGenerated).filter(Boolean);
       if (!got.length) throw new Error("AI 가 문제를 돌려주지 않았습니다. 다시 시도하세요.");
       // 저장된 문항(또는 이번에 만든 문제)과 거의 같은 문제는 버린다

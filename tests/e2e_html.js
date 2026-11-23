@@ -253,6 +253,16 @@ const sse = obj => {
   await page.locator("#detail .gen details").first().evaluate(d => d.open = true);
   await page.waitForTimeout(300);
   console.log("gen cards:", await page.locator("#detail .gen").count(), "verify chips:", (await page.locator("#detail .gen .chip.ok, #detail .gen .chip.warn").allTextContents()).join(","));
+  // 상세 창의 만든 문제도 난이도를 다시 정할 수 있다
+  {
+    const g0 = await page.evaluate(() => state.problems.get(detailState.id).generated[0].difficulty), to = g0 === 5 ? 2 : 5;
+    await page.locator("#detail .gen select.g-diff").first().selectOption(String(to)); await page.waitForTimeout(400);
+    const after = await page.evaluate(() => { const g = state.problems.get(detailState.id).generated[0]; return [g.difficulty, g.difficultyManual, g.difficultyAI]; });
+    console.log("detail gen difficulty:", g0, "->", JSON.stringify(after));
+    if (after.join() !== `${to},true,${g0}`) fails.push("상세 창 만든 문제 난이도 다시 정하기");
+    await page.locator("#detail .gen select.g-diff").first().selectOption(String(g0)); await page.waitForTimeout(300);
+    await page.locator("#detail .gen details").first().evaluate(d => d.open = true);
+  }
   await page.screenshot({path: `${OUT}/${MODE}-5-gen.png`});
   // 만든 문제: 그림 정리(스크립트·이벤트·외부 그림 제거), 시험지 모양 이미지, 텍스트 복사
   const svgInfo = await page.evaluate(() => { const s = document.querySelector("#detail .gen .p-fig svg"); return s ? [s.querySelectorAll("line,path,circle,text").length, /script|onload|onclick|image|evil/.test(s.outerHTML)] : null; });
@@ -576,6 +586,22 @@ const sse = obj => {
   console.log("ai tab tree:", treeAll, JSON.stringify(cm1View), JSON.stringify(sec), "folded:", folded);
   if (+treeAll !== box[0] || cm1View[0] !== cm1View[1] || cm1View[2] !== "true" || !/^공통수학1 · /.test(cm1View[3]) || sec[0] !== sec[1] || !sec[0] || !/이차방정식|다항식의 연산/.test(sec[2]) || folded !== "false")
     fails.push("AI 생성 문제 단원 트리: " + JSON.stringify([treeAll, cm1View, sec, folded]));
+  // AI 생성 문제 난이도 다시 정하기 → 저장되고, 다음 생성의 난이도 보정 기준으로 쓰인다
+  const firstCard = page.locator("#mb-results .gen").first(), firstKey = await firstCard.getAttribute("data-key");
+  const aiDiff = await page.evaluate(k => madeEntries().find(e => e.key === k).g.difficulty, firstKey);
+  const newDiff = aiDiff === 5 ? 3 : 5;
+  await firstCard.locator("select.g-diff").selectOption(String(newDiff)); await page.waitForTimeout(400);
+  const reDiff = await page.evaluate(k => { const e = madeEntries().find(x => x.key === k); return [e.g.difficulty, e.g.difficultyManual, e.g.difficultyAI]; }, firstKey);
+  const calib = await page.evaluate(() => genDiffCalibration("CM1"));
+  const cardChip = await page.evaluate(k => /직접 정함 · AI/.test(document.querySelector(`#mb-results .gen[data-key="${k}"]`)?.textContent || ""), firstKey);
+  console.log("made difficulty:", aiDiff, "->", JSON.stringify(reDiff), "chip:", cardChip, "| calibration:", calib.split("\n")[1] || "");
+  if (reDiff.join() !== `${newDiff},true,${aiDiff}` || !cardChip || !/선생님은 평균적으로 AI 보다/.test(calib) || !calib.includes(`AI ${aiDiff}/5 → 선생님 ${newDiff}/5`)) fails.push("AI 생성 문제 난이도 다시 정하기");
+  // AI 값으로 되돌리면 직접 정함 표시가 사라진다
+  await page.locator(`#mb-results .gen[data-key="${firstKey}"] select.g-diff`).selectOption(String(aiDiff)); await page.waitForTimeout(400);
+  const backDiff = await page.evaluate(k => { const e = madeEntries().find(x => x.key === k); return [e.g.difficulty, !!e.g.difficultyManual]; }, firstKey);
+  console.log("made difficulty back:", JSON.stringify(backDiff));
+  if (backDiff.join() !== `${aiDiff},false`) fails.push("AI 생성 문제 난이도 되돌리기");
+  await page.locator(`#mb-results .gen[data-key="${firstKey}"] select.g-diff`).selectOption(String(newDiff)); await page.waitForTimeout(300);
   await page.selectOption("#mb-from", "make"); await page.waitForTimeout(200);
   const onlyMake = await page.locator("#mb-results .gen").count();
   await page.locator("#mb-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
