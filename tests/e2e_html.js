@@ -291,19 +291,7 @@ const sse = obj => {
   if (a1 !== "ascending" || a2 !== "descending" || a3 !== "none" || back !== orig || !resetShown || desc !== asc.split(",").reverse().join()) fails.push("표 정렬 되돌리기");
   await page.locator('#sheet th[data-k="num"]').click(); await page.click("#t-sort-reset");
   if (await rowOrder() !== orig || await page.locator("#t-sort-reset").isVisible()) fails.push("정렬 원래대로 버튼");
-  await page.check("#t-all"); await page.fill("#t-sim", "1"); await page.fill("#t-var", "0"); await page.fill("#t-con", "0");
-  await page.click("#t-gen");
-  await page.waitForFunction(() => /문제 만들기 완료/.test(document.querySelector("#t-status").textContent), null, {timeout: 30000});
-  console.log("bulk:", await page.textContent("#t-status"));
   await page.screenshot({path: `${OUT}/${MODE}-6-table.png`});
-  // 선택 문항 한꺼번에 옮기기
-  await page.click("#t-move");
-  await page.selectOption("#move .up-subj", "CM2"); await page.selectOption("#move .up-chap", "1"); await page.selectOption("#move .up-sec", "CM2-1-3");
-  await page.screenshot({path: `${OUT}/${MODE}-6b-move.png`});
-  await page.click("#move-ok"); await page.waitForTimeout(400);
-  const moved2 = await page.evaluate(() => [...new Set([...state.problems.values()].map(p => p.unitId))]);
-  console.log("move all:", JSON.stringify(moved2), "rows:", await page.locator("#sheet tbody tr[data-id]").count());
-  if (moved2.join() !== "CM2-1-3") fails.push("선택 문항 단원 옮기기: " + moved2);
   // 저장소에서 카드를 단원 트리로 끌어다 놓기
   await page.click("nav.tabs button[data-tab=library]");
   await page.evaluate(() => { state.open.add("CM1"); state.open.add("CM1-1"); renderGrid(); });
@@ -315,10 +303,13 @@ const sse = obj => {
   console.log("drag:", moved3, "tree count:", (await page.locator('#tree .node[data-k="CM1-1-2"] .n').textContent()).trim());
   await page.screenshot({path: `${OUT}/${MODE}-6c-drag.png`});
   if (moved3 !== "CM1-1-2") fails.push("끌어다 놓아 옮기기: " + moved3);
-  await page.click("nav.tabs button[data-tab=table]");
   // 직접 옮긴 단원은 다시 분류해도 유지
-  await page.click("#t-classify");
-  await page.waitForFunction(() => /분류 완료/.test(document.querySelector("#t-status").textContent), null, {timeout: 20000});
+  await page.evaluate(id => classifyMany([id]), dragId);
+  await page.click("nav.tabs button[data-tab=table]");
+  // 문항 표에는 한꺼번에 작업(분류·풀이·옮기기·만들기)과 선택 칸이 없다
+  const noBulk = await page.evaluate(() => ["#t-classify", "#t-solve", "#t-move", "#t-gen", "#t-all", "#sheet .sel"].filter(x => document.querySelector(x)));
+  console.log("table bulk controls left:", JSON.stringify(noBulk), "|", await page.textContent("#t-sel"));
+  if (noBulk.length) fails.push("문항 표 한꺼번에 작업 남음: " + noBulk);
   const kept = await page.evaluate(id => state.problems.get(id).unitId, dragId);
   console.log("kept after reclassify:", kept);
   if (kept !== "CM1-1-2") fails.push("다시 분류 후 직접 옮긴 단원 유지: " + kept);
@@ -448,7 +439,7 @@ const sse = obj => {
   const mk = await page.evaluate(() => {
     const ms = [...state.made.values()];
     return {status: document.querySelector("#mk-status").textContent, made: ms.length, units: ms.map(m => m.g.unit_id), diffs: ms.map(m => m.g.difficulty),
-      lib: [state.problems.size, state.exams.size], fresh: document.querySelectorAll("#mk-results .gen.fresh").length, count: document.querySelector("#mb-count").textContent};
+      lib: [state.problems.size, state.exams.size], fresh: document.querySelectorAll("#mk-results .gen.fresh").length};
   });
   console.log("make:", JSON.stringify(mk));
   const mp = makePrompts[0] || "";
@@ -471,19 +462,33 @@ const sse = obj => {
   if (!opened || !opened.includes(chipText.replace(/.* (\d+)번$/, "$1"))) fails.push("참고 문항 칩 열기");
   await page.click("#detail .close");
   await page.screenshot({path: `${OUT}/${MODE}-11-make.png`, fullPage: true});
-  // 보관함: 원본 문항에서 만든 문제도 함께 보이고, 거르기·삭제가 된다
+  // ⑤ AI 생성 문제: 원본 문항에서 만든 문제도 함께 보이고, 단원 트리·거르기·삭제가 된다
+  await page.click("nav.tabs button[data-tab=ai]"); await page.waitForTimeout(200);
   const box = await page.evaluate(() => [madeEntries().length, madeEntries().filter(e => e.from === "derived").length]);
+  const treeAll = (await page.textContent('#mb-tree .node[data-k=""] .n')).trim();
+  await page.click('#mb-tree .node[data-k="CM1"]'); await page.waitForTimeout(300);
+  const cm1View = await page.evaluate(() => [document.querySelectorAll("#mb-results .gen").length, madeEntries().filter(e => /^CM1-/.test(e.g.unit_id)).length,
+    document.querySelector('#mb-tree .node[data-k="CM1"]').getAttribute("aria-expanded"), document.querySelector("#mb-status").textContent]);
+  await page.click('#mb-tree .node[data-k="CM1-1"]'); await page.click('#mb-tree .node[data-k="CM1-1-1"]'); await page.waitForTimeout(300);
+  const sec = await page.evaluate(() => [document.querySelectorAll("#mb-results .gen").length, madeEntries().filter(e => e.g.unit_id === "CM1-1-1").length, document.querySelector("#mb-status").textContent]);
+  await page.screenshot({path: `${OUT}/${MODE}-12-ai-tab.png`});
+  await page.click('#mb-tree .node[data-k="CM1"]'); // 다시 누르면 접힘
+  const folded = await page.getAttribute('#mb-tree .node[data-k="CM1"]', "aria-expanded");
+  await page.click('#mb-tree .node[data-k=""]'); await page.waitForTimeout(200);
+  console.log("ai tab tree:", treeAll, JSON.stringify(cm1View), JSON.stringify(sec), "folded:", folded);
+  if (+treeAll !== box[0] || cm1View[0] !== cm1View[1] || cm1View[2] !== "true" || !/^공통수학1 · /.test(cm1View[3]) || sec[0] !== sec[1] || !sec[0] || !/이차방정식|다항식의 연산/.test(sec[2]) || folded !== "false")
+    fails.push("AI 생성 문제 단원 트리: " + JSON.stringify([treeAll, cm1View, sec, folded]));
   await page.selectOption("#mb-from", "make"); await page.waitForTimeout(200);
-  const onlyMake = await page.locator("#mk-results .gen").count();
-  await page.locator("#mk-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
+  const onlyMake = await page.locator("#mb-results .gen").count();
+  await page.locator("#mb-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
   const afterBoxDel = await page.evaluate(() => state.made.size);
   await page.selectOption("#mb-from", "");
   // 원본 문항에서 만든 문제도 보관함에서 지워진다 (하나, 그리고 보이는 문제 한꺼번에)
   await page.selectOption("#mb-from", "derived"); await page.waitForTimeout(200);
   const derivedBefore = await page.evaluate(() => [...state.problems.values()].reduce((n, p) => n + (p.generated?.length || 0), 0));
-  await page.locator("#mk-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
+  await page.locator("#mb-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
   const derivedOne = await page.evaluate(() => [...state.problems.values()].reduce((n, p) => n + (p.generated?.length || 0), 0));
-  const cardsLeft = await page.locator("#mk-results .gen").count();
+  const cardsLeft = await page.locator("#mb-results .gen").count();
   await page.click("#mb-del-shown"); await page.click("#confirm-yes"); await page.waitForTimeout(600);
   const derivedAll = await page.evaluate(() => [...state.problems.values()].reduce((n, p) => n + (p.generated?.length || 0), 0));
   console.log("delete derived:", derivedBefore, "->", derivedOne, "cards", cardsLeft, "-> all", derivedAll);
@@ -545,9 +550,9 @@ const sse = obj => {
   if (MODE === "html") await page.evaluate(() => removeProblem(state.problems.get("outside-q1")));
   // 문항 표: 정렬·선택·검색이 처음 상태로
   await page.click("nav.tabs button[data-tab=table]");
-  await page.click('#sheet th[data-k="num"]'); await page.check("#t-all"); await page.fill("#t-q", "group"); await page.dispatchEvent("#t-q", "input");
+  await page.click('#sheet th[data-k="num"]'); await page.fill("#t-q", "group"); await page.dispatchEvent("#t-q", "input");
   await page.click("#tab-table .page-refresh"); await page.waitForFunction(() => /다시 조회했습니다/.test(document.querySelector("#tab-table .page-stamp").textContent));
-  const tblQ = await page.evaluate(() => [state.sort.key, state.selected.size, document.querySelector("#t-q").value]);
+  const tblQ = await page.evaluate(() => [state.sort.key, 0, document.querySelector("#t-q").value]);
   console.log("requery table:", JSON.stringify(tblQ));
   if (tblQ.join("|") !== "|0|") fails.push("문항 표 다시 조회: " + tblQ);
   // 설정: 저장하지 않은 입력은 버리고 저장된 값으로 (다운로드 버전)
@@ -565,7 +570,7 @@ const sse = obj => {
     if (!aiBefore || !aiStill) fails.push("설정 다시 조회 뒤 AI 연결 유지");
   }
   const stamps = [];
-  for (const tab of ["ingest", "library", "table", "make", "settings"]) {
+  for (const tab of ["ingest", "library", "table", "make", "ai", "settings"]) {
     await page.click(`nav.tabs button[data-tab=${tab}]`);
     await page.click(`#tab-${tab} .page-refresh`);
     await page.waitForFunction(id => /다시 조회했습니다/.test(document.querySelector(`#tab-${id} .page-stamp`).textContent), tab, {timeout: 12000}).catch(() => {});
