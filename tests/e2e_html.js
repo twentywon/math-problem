@@ -35,7 +35,7 @@ function makeAnswer() {
   if (nMake === 0) out.push({kind: "유사문제", title: "베낀 문제", statement: "함수 $y=-x(x-6)$ 의 그래프 ...", choices: [], figure_description: "", figure_svg: "", answer: "9", solution_steps: ["베낌"], shared_concepts: [], relation_to_original: "", unit_id: "CM1-2-2", difficulty: 4});
   for (let i = 0; i < 2; i++) {
     const [title, statement, choices, answer] = MAKE_POOL[(nMake * 2 + i) % MAKE_POOL.length];
-    out.push({kind: "유사문제", title, statement, choices, figure_description: "", figure_svg: "", answer, solution_steps: ["계산한다."], shared_concepts: ["계산"], relation_to_original: "", reference_numbers: i === 0 ? [2] : [], unit_id: "CM1-1-1", difficulty: 4});
+    out.push({kind: "유사문제", title, statement, choices, figure_description: "", figure_svg: "", answer, solution_steps: ["계산한다."], shared_concepts: ["계산"], relation_to_original: "", reference_numbers: i === 0 ? [2] : [], key_idea: title + " 의 핵심 관찰", unit_id: "CM1-1-1", difficulty: 4});
   }
   nMake++;
   return {problems: out};
@@ -45,7 +45,10 @@ function answerFor(prompt) {
   if (prompt.includes("레이아웃을 읽는 도구")) return {columns: [{x0: 0, x1: 1000}], problems: [{number: 1, column: 0, y_top: 30}, {number: 2, column: 0, y_top: 520}], groups: [], column_bottoms: [990]};
   if (prompt.includes("검토자")) {
     const n = (prompt.match(/\[문제 \d+\]/g) || []).length;
-    return {items: Array.from({length: n}, (_, i) => ({index: i + 1, answer: i === 1 ? "7" : "3", well_posed: true, issues: ""}))};
+    // 문제 본문에 '다항식' 이 들어간 문제는 계산형으로 평가한다
+    const blocks = prompt.split(/\[문제 \d+\]/).slice(1);
+    return {items: Array.from({length: n}, (_, i) => ({index: i + 1, answer: i === 1 ? "7" : "3", well_posed: true, issues: "",
+      idea_score: /다항식/.test(blocks[i] || "") ? 2 : 4, calc_burden: /다항식/.test(blocks[i] || "") ? 4 : 2}))};
   }
   if (prompt.includes("[새 문제 만들기]")) { makePrompts.push(prompt); return makeAnswer(); }
   if (prompt.includes("출제 경험")) return {problems: [
@@ -446,9 +449,15 @@ const sse = obj => {
   });
   console.log("make:", JSON.stringify(mk));
   const mp = makePrompts[0] || "";
-  console.log("make prompt:", JSON.stringify({refs: mp.includes("[참고 문항]"), profile: (mp.match(/\[저장된 문항의 형식\][^\n]*/) || [""])[0].slice(0, 140), noCopy: mp.includes("그대로 옮기거나")}));
+  console.log("make prompt:", JSON.stringify({insight: mp.includes("사고력과 아이디어가 중요한 문제"), refs: mp.includes("[참고 문항]"), profile: (mp.match(/\[저장된 문항의 형식\][^\n]*/) || [""])[0].slice(0, 140), noCopy: mp.includes("그대로 옮기거나")}));
   if (!mp.includes("[참고 문항]") || !mp.includes("[저장된 문항의 형식]") || !mp.includes("그대로 옮기거나")) fails.push("문제 만들기: 저장된 문항 형식 참고");
-  if (!/버린 문제 1개/.test(mk.status)) fails.push("문제 만들기: 저장된 문항과 같은 문제 버리기 " + mk.status);
+  if (!/거의 같아 버린 문제 1개/.test(mk.status)) fails.push("문제 만들기: 저장된 문항과 같은 문제 버리기 " + mk.status);
+  // 사고력 중심(기본): 지시가 들어가고, 계산형으로 평가된 문제는 저장하지 않고 다음 요청에 알린다
+  const insight = await page.evaluate(() => [[...state.made.values()].some(m => /다항식/.test(m.g.statement)), [...state.made.values()].every(m => m.g.key_idea && m.g.verification?.idea_score >= 3),
+    document.querySelectorAll("#mk-results .gen .callout.math").length]);
+  console.log("insight:", JSON.stringify(insight), "| calc rejected in status:", /계산 위주라 버린 문제 \d+개/.test(mk.status), "| told next:", makePrompts.some(p => p.includes("계산 위주라 버렸다")));
+  if (!mp.includes("사고력과 아이디어가 중요한 문제") || insight[0] || !insight[1] || !/계산 위주라 버린 문제 \d+개/.test(mk.status) || !makePrompts.some(p => p.includes("계산 위주라 버렸다")))
+    fails.push("사고력 중심 문제 만들기: " + JSON.stringify(insight) + " " + mk.status);
   if (makePrompts.length > 1 && !makePrompts[1].includes("베낀 문제")) fails.push("문제 만들기: 버린 문제를 다음 요청에 알림");
   if (mk.made !== 3 || !mk.units.every(u => /^CM1-/.test(u)) || !mk.diffs.every(x => x === 4) || mk.lib.join() !== libBefore.join() || mk.fresh !== 3)
     fails.push("문제 만들기 → 보관함 (저장소와 따로): " + JSON.stringify(mk));
@@ -462,7 +471,7 @@ const sse = obj => {
   await chip.click(); await page.waitForTimeout(300);
   const opened = await page.evaluate(() => document.querySelector("#detail").open && document.querySelector("#detail .d-head").textContent.replace(/\s+/g, " "));
   console.log("reference chip:", chipText, "->", (opened || "").slice(0, 60));
-  if (!opened || !opened.includes(chipText.replace(/.* (\d+)번$/, "$1"))) fails.push("참고 문항 칩 열기");
+  if (!opened || !opened.includes((chipText.match(/(\d+)번/) || [])[1] || "?")) fails.push("참고 문항 칩 열기: " + chipText);
   await page.click("#detail .close");
   // 이미지 저장을 누르면 저장되는 이미지가 그 카드에 보인다
   const card2 = page.locator("#mk-results .gen").nth(1);

@@ -1427,6 +1427,10 @@ const KINDS = {
 const GEN_SYSTEM = `너는 한국 수능·모의고사 출제 경험이 많은 수학 교사다. 2022 개정 교육과정 범위 안에서 문제를 만든다.
 규칙
 - 교육과정 범위를 벗어나지 않고, 조건이 모자라거나 넘치지 않아 답이 하나로 정해져야 한다.
+문제 성격 (모든 문제에 기본으로 지킨다)
+- 계산이 복잡한 문제가 아니라 사고력과 아이디어가 중요한 문제를 만든다. 핵심 관찰 하나(대칭성, 그래프 개형 추론, 경우 나누기, 불변량·보존되는 양, 치환·관점 바꾸기, 극단적인 경우, 규칙성 발견, 조건의 숨은 의미 해석 등)를 떠올리면 짧게 풀리고, 떠올리지 못하면 막히는 구조로 만든다.
+- 수치는 작고 깔끔하게 한다. 긴 전개, 복잡한 분수·근호 계산, 큰 수 계산, 단순 반복 계산으로 난이도를 올리지 않는다. 어려운 문제일수록 계산이 아니라 관찰의 깊이로 어렵게 한다.
+- key_idea 에 그 핵심 관찰을 한두 문장으로 쓰고, 이 관찰 없이 정면으로 계산하면 왜 힘든지도 덧붙인다.
 - 수식은 LaTeX 로 $...$ (줄 수식은 $$...$$) 안에 쓴다.
 - 5지선다면 choices 에 선택지 5개를 넣고 answer 에는 정답 번호(1~5)만 쓴다. 단답형이면 choices 는 [], answer 는 값만 (0 이상 999 이하 정수 권장).
 - 그림이 꼭 필요하면 figure_description 에 그릴 수 있을 만큼 자세히 쓰되 본문만으로도 풀 수 있게 조건을 글로 적는다. 없으면 빈 문자열.
@@ -1444,19 +1448,23 @@ ${Object.entries(KINDS).map(([k, v]) => `- ${k}: ${v}`).join("\n")}
 ${curriculumText()}`;
 const GEN_SCHEMA = {type: "object", additionalProperties: false, required: ["problems"], properties: {problems: {type: "array", items: {
   type: "object", additionalProperties: false,
-  required: ["kind", "title", "statement", "choices", "figure_description", "figure_svg", "answer", "solution_steps", "shared_concepts", "relation_to_original", "reference_numbers", "unit_id", "difficulty"],
+  required: ["kind", "title", "statement", "choices", "figure_description", "figure_svg", "answer", "solution_steps", "shared_concepts", "relation_to_original", "reference_numbers", "key_idea", "unit_id", "difficulty"],
   properties: {
     kind: {type: "string", enum: Object.keys(KINDS)}, title: {type: "string"}, statement: {type: "string"}, choices: STR_ARR,
     figure_description: {type: "string"}, figure_svg: {type: "string"}, answer: {type: "string"}, solution_steps: STR_ARR, shared_concepts: STR_ARR,
-    relation_to_original: {type: "string"}, reference_numbers: {type: "array", items: {type: "integer"}}, unit_id: UNIT_ENUM, difficulty: {type: "integer"},
+    relation_to_original: {type: "string"}, reference_numbers: {type: "array", items: {type: "integer"}}, key_idea: {type: "string"}, unit_id: UNIT_ENUM, difficulty: {type: "integer"},
   }}}}};
 const VERIFY_SYSTEM = `너는 꼼꼼한 수학 검토자다. 주어진 문제들을 처음 보는 학생처럼 각각 직접 풀어라.
 - answer: 5지선다면 정답 번호(1~5)만, 단답형이면 값만.
 - well_posed: 조건이 모순되지 않고 답이 하나로 정해지며 2022 개정 교육과정 범위 안이면 true.
-- issues: 오류, 모호한 표현, 답이 여러 개이거나 없는 문제 등을 구체적으로. 없으면 빈 문자열.`;
+- issues: 오류, 모호한 표현, 답이 여러 개이거나 없는 문제 등을 구체적으로. 없으면 빈 문자열.
+- idea_score: 직접 풀어 보니 핵심 관찰·아이디어가 풀이를 얼마나 좌우하는지 1~5 (5: 아이디어 하나로 짧게 풀림, 1: 아이디어 없이 공식 대입·계산만).
+- calc_burden: 계산 부담 1~5 (1: 암산 수준, 5: 길고 복잡한 계산이 대부분).`;
 const VERIFY_SCHEMA = {type: "object", additionalProperties: false, required: ["items"], properties: {items: {type: "array", items: {
-  type: "object", additionalProperties: false, required: ["index", "answer", "well_posed", "issues"],
-  properties: {index: {type: "integer"}, answer: {type: "string"}, well_posed: {type: "boolean"}, issues: {type: "string"}}}}}};
+  type: "object", additionalProperties: false, required: ["index", "answer", "well_posed", "issues", "idea_score", "calc_burden"],
+  properties: {index: {type: "integer"}, answer: {type: "string"}, well_posed: {type: "boolean"}, issues: {type: "string"}, idea_score: {type: "integer"}, calc_burden: {type: "integer"}}}}}};
+// 계산형: 계산 부담 4 이상이거나 아이디어 의존도 2 이하
+const isCalcHeavy = v => !!v && Number.isFinite(v.calc_burden) && (v.calc_burden >= 4 || v.idea_score <= 2);
 
 const MARKS = "①②③④⑤";
 function normalizeAnswer(a) {
@@ -1614,6 +1622,7 @@ function cleanGenerated(q) {
     solution_steps: strArr(q.solution_steps).length ? strArr(q.solution_steps) : splitSteps(q.solution),
     shared_concepts: strArr(q.shared_concepts), relation_to_original: str(q.relation_to_original),
     reference_numbers: (Array.isArray(q.reference_numbers) ? q.reference_numbers : []).map(Number).filter(Number.isInteger),
+    key_idea: str(q.key_idea),
     unit_id: UNITS[q.unit_id] ? q.unit_id : null, difficulty: clampDiff(q.difficulty), createdAt: new Date().toISOString(), by: PLATFORM.ai.label(),
   };
 }
@@ -1642,7 +1651,8 @@ async function verifyMade(made) {
       const v = arr.find(x => Number(x?.index) === i + 1) || arr[i];
       if (!v) { q.verification = {passed: false, error: "검산 결과가 비어 있습니다"}; return; }
       const ans = str(v.answer).trim(), ok = normalizeAnswer(ans) === normalizeAnswer(q.answer), wp = v.well_posed !== false;
-      q.verification = {answer: ans, well_posed: wp, issues: str(v.issues), answer_match: ok, passed: ok && wp};
+      const clamp5 = x => Number.isFinite(Number(x)) && Number(x) > 0 ? Math.min(5, Math.max(1, Math.round(Number(x)))) : null;
+      q.verification = {answer: ans, well_posed: wp, issues: str(v.issues), answer_match: ok, passed: ok && wp, idea_score: clamp5(v.idea_score), calc_burden: clamp5(v.calc_burden)};
     });
   } catch (e) { made.forEach(q => { q.verification = {passed: false, error: e.message}; }); }
 }
@@ -1675,7 +1685,8 @@ const stepsHTML = steps => steps?.length
   : `<p class="muted">풀이 과정이 없습니다.</p>`;
 const confLabel = c => ({high: "확신 높음", medium: "확신 보통", low: "확신 낮음"}[c] || "");
 const verifyChip = v => !v ? `<span class="chip">검산 안 함</span>` : v.error ? `<span class="chip warn">검산 실패</span>`
-  : v.passed ? `<span class="chip ok">✓ 검산 통과</span>` : `<span class="chip warn">✗ 검산 불일치</span>`;
+  : (v.passed ? `<span class="chip ok">✓ 검산 통과</span>` : `<span class="chip warn">✗ 검산 불일치</span>`) +
+    (Number.isFinite(v.calc_burden) && v.calc_burden !== null ? `<span class="chip ${isCalcHeavy(v) ? "warn" : ""}" title="따로 푼 AI 의 평가: 아이디어 의존도와 계산 부담 (1~5)">${isCalcHeavy(v) ? "계산형 · " : ""}아이디어 ${v.idea_score}/5 · 계산 ${v.calc_burden}/5</span>` : "");
 
 /* =====================================================================
    화면: 탭
@@ -2451,6 +2462,7 @@ function genCardHTML(g, i) {
       <div class="ans-row"><span class="lab">정답</span><div class="val">${answerHTML(g.answer, type)}</div></div>
       ${stepsHTML(g.solution_steps?.length ? g.solution_steps : splitSteps(g.solution))}
       ${v && !v.passed ? `<div class="notice">${v.error ? "검산하지 못했습니다: " + esc(v.error) : `따로 다시 푼 답은 <b>${esc(v.answer)}</b> 입니다.${v.issues ? " 지적: " + esc(v.issues) : ""} 직접 확인하세요.`}</div>` : ""}
+      ${g.key_idea ? `<div class="callout math"><b>핵심 아이디어</b><br>${escBr(g.key_idea)}</div>` : ""}
       ${g.relation_to_original ? `<div class="callout"><b>원본과의 관계</b><br>${escBr(g.relation_to_original)}</div>` : ""}
       ${g.shared_concepts?.length ? `<div>${g.shared_concepts.map(k => `<span class="chip">${esc(k)}</span>`).join(" ")}</div>` : ""}
     </div></details></article>`;
@@ -2556,9 +2568,9 @@ function examTime(ex) {
 }
 // 형식 참고용 실제 문항 고르기
 // 1) 범위: 고른 중단원 → 같은 대단원 → 같은 과목 → 저장소 전체 순으로, 문항이 있는 첫 범위
-// 2) 하나씩 차례로 뽑는다. 점수(낮을수록 먼저) = 난이도 차이 + 최신일수록 감점 적게 + 고른 유형과 다르면 가산
+// 2) 하나씩 차례로 뽑는다. 점수(낮을수록 먼저) = 난이도 차이 + 최신일수록 감점 적게 + 고른 유형과 다르면 가산 + 풀이가 길면 조금 가산
 //    + 이미 뽑힌 같은 출처 문항 수만큼 가산(한 출처에 몰리지 않게, 개수 제한은 없음) + 작은 무작위(같은 조건이면 매번 다르게)
-const REF_WEIGHT = {diff: 1, recent: 1.5, type: 1.5, sameSource: 1, jitter: 0.3};
+const REF_WEIGHT = {diff: 1, recent: 1.5, type: 1.5, sameSource: 1, jitter: 0.3, longSolution: 0.2};
 function styleRefs(scope, diff, type = "auto", count = 4) {
   const real = [...state.problems.values()].filter(p => p.classification?.transcription && state.exams.get(p.examId)?.kind !== "generated");
   const [subj, chap] = scope.ids[0].split("-");
@@ -2571,7 +2583,8 @@ function styleRefs(scope, diff, type = "auto", count = 4) {
   const times = [...new Set(pool.map(p => examTime(state.exams.get(p.examId))))].sort((x, y) => y - x);
   const age = p => times.length > 1 ? times.indexOf(examTime(state.exams.get(p.examId))) / (times.length - 1) : 0;
   const base = new Map(pool.map(p => [p.id, REF_WEIGHT.diff * Math.abs((diffLevel(p) || 3) - target) + REF_WEIGHT.recent * age(p)
-    + (wantType && qType(p) !== wantType ? REF_WEIGHT.type : 0) + REF_WEIGHT.jitter * Math.random()]));
+    + (wantType && qType(p) !== wantType ? REF_WEIGHT.type : 0) + REF_WEIGHT.jitter * Math.random()
+    + REF_WEIGHT.longSolution * Math.min(5, Math.max(0, (p.classification.solution_steps?.length || 0) - 4))])); // 풀이가 길수록(계산이 많을수록) 조금 뒤로
   const picked = [], fromSource = new Map(), left = [...pool];
   while (picked.length < count && left.length) {
     let best = 0, bestCost = Infinity;
@@ -2821,7 +2834,7 @@ $("#mk-go").onclick = async () => {
   const status = t => { $("#mk-status").textContent = t; };
   try {
     makeState.fresh = new Set();
-    const made = [], rejected = [], refs = styleRefs(scope, diff, type);
+    const made = [], rejected = [], calcRejected = [], refs = styleRefs(scope, diff, type);
     const refImages = await Promise.all(refs.picked.slice(0, 3).map(p => problemBlob(p).catch(() => null))).then(a => a.filter(Boolean));
     // 겹침 검사 대상: 저장된 모든 문항 + 이번에 만든 문제
     const seen = [...state.problems.values()].filter(p => p.classification?.transcription).map(p => ({text: p.classification.transcription, label: `${p.examTitle} ${p.number}번`}))
@@ -2837,7 +2850,7 @@ $("#mk-go").onclick = async () => {
     let attempts = 0;
     for (let done = 0; done < n;) {
       const k = Math.min(5, n - done); // 한 번에 다섯 문제씩
-      if (++attempts > Math.ceil(n / 5) + 4) { status(`저장된 문항과 겹치지 않는 문제를 ${done}개만 만들었습니다. 다시 눌러 주세요.`); break; }
+      if (++attempts > Math.ceil(n / 5) + 4) { status(`조건(저장된 문항과 겹치지 않음, 계산 위주 아님)에 맞는 문제를 ${done}개만 만들었습니다. 다시 눌러 주세요.`); break; }
       status(`문제를 만드는 중… ${done}/${n} (한 번에 ${k}문제, 1~3분 걸릴 수 있습니다)`);
       const diffText = diff === "mix" ? "1~5 를 고르게 섞어서 (각 문제의 difficulty 에 표시)" : `${diff}/5 — ${MAKE_DIFF[diff]}. 모든 문제의 difficulty 를 ${diff} 로`;
       const typeText = type === "auto" ? (refs.pool.length ? "참고 문항과 [저장된 문항의 형식] 비율에 맞춰 (5지선다면 choices 5개·answer 는 번호, 단답형이면 choices 는 [])" : "5지선다와 단답형을 섞어서")
@@ -2848,6 +2861,7 @@ $("#mk-go").onclick = async () => {
         `난이도: ${diffText}`, `유형: ${typeText}`,
         made.length ? `이미 만든 문제와 겹치지 않게 다른 상황·수치·접근으로 만든다. 이미 만든 제목: ${made.map(g => g.title).join(", ")}` : "",
         rejected.length ? `다음 문제는 저장된 문항을 거의 그대로 옮겨서 버렸다. 이렇게 만들지 마라: ${rejected.map(r => r.title).join(", ")}` : "",
+        calcRejected.length ? `다음 문제는 계산 위주라 버렸다. 계산을 줄이고 핵심 관찰 하나로 풀리게 만들어라: ${calcRejected.join(", ")}` : "",
         extra ? `추가 요청: ${extra}` : "", refText, anchorText(new Set())].filter(Boolean).join("\n")});
       const got = (Array.isArray(data?.problems) ? data.problems : []).map(cleanGenerated).filter(Boolean);
       if (!got.length) throw new Error("AI 가 문제를 돌려주지 않았습니다. 다시 시도하세요.");
@@ -2867,7 +2881,12 @@ $("#mk-go").onclick = async () => {
         const chosen = [...new Set(g.reference_numbers || [])].map(k => refInfo[k - 1]).filter(Boolean);
         g.references = chosen.length ? chosen : refInfo; g.referencesGuessed = !chosen.length && refInfo.length > 0;
       }
-      if (verify) { status(`검산 중… (${batch.length}문제를 처음 보는 사람처럼 다시 풉니다)`); await verifyMade(batch); }
+      if (verify) {
+        status(`검산 중… (${batch.length}문제를 처음 보는 사람처럼 다시 풀고 문제 성격도 봅니다)`); await verifyMade(batch);
+        // 계산 위주로 나온 문제는 저장하지 않고 다음 요청에 알린다
+        for (const g of [...batch]) if (isCalcHeavy(g.verification)) { calcRejected.push(g.title); batch.splice(batch.indexOf(g), 1); }
+        if (!batch.length) continue;
+      }
       for (const g of batch) {
         status(`보관함에 저장 중… ${done + 1}/${n}`);
         const m = await saveMade(g, {scope: scope.label, difficulty: diff, type});
@@ -2878,7 +2897,8 @@ $("#mk-go").onclick = async () => {
     }
     const bad = made.filter(g => g.verification && !g.verification.passed).length;
     if (made.length >= n) status(`${made.length}문제를 만들어 ⑤ AI 생성 문제에 저장했습니다${bad ? ` (검산 불일치 ${bad}개는 꼭 확인하세요)` : ""}` +
-      (rejected.length ? ` · 저장된 문항과 거의 같아 버린 문제 ${rejected.length}개 (${rejected.map(r => r.like).join(", ")})` : ""));
+      (rejected.length ? ` · 저장된 문항과 거의 같아 버린 문제 ${rejected.length}개 (${rejected.map(r => r.like).join(", ")})` : "") +
+      (calcRejected.length ? ` · 계산 위주라 버린 문제 ${calcRejected.length}개` : ""));
   } catch (e) { status("실패: " + e.message); }
   makeState.busy = false; $("#mk-go").disabled = !aiOK() || !canEdit();
   renderMakeResults();
