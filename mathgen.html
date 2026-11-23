@@ -212,6 +212,9 @@ dialog#detail{overflow:hidden}
 .gen h4{font-size:16px}
 .g-view{justify-self:start}
 .make-form{display:grid;gap:12px}
+.diff-set{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:6px}
+.diff-set .btn{min-width:32px}
+select.dsel{padding:2px 4px;font-size:13px;min-width:64px}
 .page-tools{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:-6px 0 8px;font-size:13px}
 .make-grid{display:grid;grid-template-columns:minmax(0,2.4fr) repeat(3,minmax(110px,1fr));gap:12px;align-items:start}
 .make-grid .mf{display:grid;gap:4px;font-size:14px;min-width:0}
@@ -425,6 +428,8 @@ table.sheet input[type=text]{width:64px;padding:2px 6px;font-family:var(--font-n
       <p id="store-desc" class="muted"></p>
       <p id="store-stats"></p>
       <p id="diff-desc" class="muted"></p>
+      <p id="diff-learn" class="muted"></p>
+      <button class="btn" id="btn-diff-clear" hidden>직접 정한 난이도 모두 지우기</button>
       <button class="btn danger" id="btn-wipe">모든 데이터 삭제</button>
     </div>
   </section>
@@ -1329,6 +1334,27 @@ function pointsOf(p) {
   return m ? +m[1] : 0;
 }
 const diffCache = {map: null, rev: -1, info: new Map()};
+// 선생님이 직접 정한 난이도(p.diffManual, 1~5)로 기준을 배운다.
+// 특징 x = [1, AI 점수(0~1), 배점(0~1), 출처 안 번호 위치(0~1)] 로 난이도 y(1~5)를 맞추는 선형식 y ≈ x·w 를
+// 기본 기준(1 + 4×(0.6·AI + 0.25·배점 + 0.15·위치))에서 크게 벗어나지 않도록(릿지) 최소제곱으로 구한다.
+const DIFF_PRIOR = [1, 2.4, 1.0, 0.6], DIFF_RIDGE = 0.5, DIFF_LEARN_MIN = 5; // 기울기만 기본 기준 쪽으로 당기고 절편은 자유롭게
+function solveLinear(A, y) { // 가우스 소거
+  const n = y.length, M = A.map((row, i) => [...row, y[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    if (Math.abs(M[c][c]) < 1e-12) return null;
+    for (let r = 0; r < n; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]; }
+  }
+  return M.map((row, i) => row[n] / row[i]);
+}
+function learnDiffWeights(rows) {
+  const pen = i => (i ? DIFF_RIDGE : 0.01);
+  const A = DIFF_PRIOR.map((_, i) => DIFF_PRIOR.map((__, j) => (i === j ? pen(i) : 0))), y = DIFF_PRIOR.map((w, i) => pen(i) * w);
+  for (const {x, level} of rows) for (let i = 0; i < 4; i++) { y[i] += x[i] * level; for (let j = 0; j < 4; j++) A[i][j] += x[i] * x[j]; }
+  return solveLinear(A, y);
+}
+const manualDiff = p => [1, 2, 3, 4, 5].includes(Number(p?.diffManual)) ? Number(p.diffManual) : 0;
 function diffInfo(p) {
   if (diffCache.map !== state.problems || diffCache.rev !== state.rev) {
     diffCache.map = state.problems; diffCache.rev = state.rev; diffCache.info = new Map();
@@ -1338,18 +1364,24 @@ function diffInfo(p) {
     const scored = ps.map(x => {
       const s = (aiScore(x) - 1) / 9, pt = pointsOf(x), m = maxNo.get(`${x.examId}/${x.section || 0}`) || 1;
       const ptN = pt ? Math.min(1, Math.max(0, (pt - 2) / 2)) : s, pos = m > 1 && !["images", "generated"].includes(state.exams.get(x.examId)?.kind) ? (x.number - 1) / (m - 1) : s;
-      return {id: x.id, v: 0.6 * s + 0.25 * ptN + 0.15 * pos, raw: aiScore(x), pt};
+      return {id: x.id, x: [1, s, ptN, pos], v: 0.6 * s + 0.25 * ptN + 0.15 * pos, raw: aiScore(x), pt, manual: manualDiff(x)};
     }).sort((a, b) => a.v - b.v);
+    // 직접 정한 문항이 5개 이상이고 두 단계 이상에 걸쳐 있으면 학습한 기준을 쓴다
+    const labeled = scored.filter(r => r.manual).map(r => ({x: r.x, level: r.manual}));
+    const w = labeled.length >= DIFF_LEARN_MIN && new Set(labeled.map(l => l.level)).size >= 2 ? learnDiffWeights(labeled) : null;
+    diffCache.model = w ? {w, n: labeled.length} : {w: null, n: labeled.length};
     const n = scored.length;
     scored.forEach((r, i) => {
       let j = i; while (j + 1 < n && scored[j + 1].v === r.v) j++; // 같은 점수는 같은 순위
       const pct = n > 1 ? ((i + j) / 2) / (n - 1) : 0.5;
-      const level = n >= 10 ? 1 + Math.min(4, Math.floor(pct * 5)) : Math.min(5, Math.max(1, Math.ceil(r.raw / 2)));
-      diffCache.info.set(r.id, {level, top: Math.max(1, Math.round((1 - pct) * 100)), raw: r.raw, points: r.pt, n, relative: n >= 10});
+      const base = n >= 10 ? 1 + Math.min(4, Math.floor(pct * 5)) : Math.min(5, Math.max(1, Math.ceil(r.raw / 2)));
+      const auto = w ? Math.min(5, Math.max(1, Math.round(r.x.reduce((sum, xi, k) => sum + xi * w[k], 0)))) : base;
+      diffCache.info.set(r.id, {level: r.manual || auto, auto, manual: !!r.manual, learned: !!w, top: Math.max(1, Math.round((1 - pct) * 100)), raw: r.raw, points: r.pt, n, relative: n >= 10});
     });
   }
   return diffCache.info.get(p.id) || null;
 }
+const diffModel = () => { diffInfo({id: ""}); return diffCache.model || {w: null, n: 0}; };
 const diffLevel = p => diffInfo(p)?.level || 0;
 // 분류할 때 함께 보내는 기준 문항: 상대 난이도 1~5 에서 두 개씩
 function anchorText(exclude) {
@@ -1358,11 +1390,15 @@ function anchorText(exclude) {
   const pick = [];
   for (let lv = 1; lv <= 5; lv++) {
     const group = ps.filter(p => diffLevel(p) === lv).sort((a, b) => (a.id < b.id ? -1 : 1));
-    pick.push(...group.filter((_, i) => i % Math.max(1, Math.floor(group.length / 2)) === 0).slice(0, 2));
+    const mine = group.filter(p => manualDiff(p)), rest = group.filter(p => !manualDiff(p));
+    // 선생님이 직접 정한 문항을 먼저 (단계마다 최대 2개), 모자라면 자동으로 매긴 문항
+    pick.push(...mine.slice(0, 2), ...rest.filter((_, i) => i % Math.max(1, Math.floor(rest.length / 2)) === 0).slice(0, Math.max(0, 2 - mine.length)));
   }
   if (!pick.length) return "";
-  return "\n\n[기준 문항] 이미 저장된 문항들의 난이도다. 새 문항의 difficulty_score 는 이 문항들과 비교해 같은 척도로 매겨라.\n" +
-    pick.map(p => `- AI 점수 ${aiScore(p)}/10 (상대 난이도 ${diffLevel(p)}/5, 배점 ${pointsOf(p) || "?"}점) ${p.examTitle} ${p.number}번: ${p.classification.transcription.replace(/\s+/g, " ").slice(0, 140)}`).join("\n");
+  const anyManual = pick.some(p => manualDiff(p));
+  return "\n\n[기준 문항] 이미 저장된 문항들의 난이도다. 새 문항의 difficulty_score 는 이 문항들과 비교해 같은 척도로 매겨라." +
+    (anyManual ? " '선생님이 정한 난이도'가 붙은 문항은 선생님이 직접 정한 값이므로 가장 중요한 기준으로 삼아라. 1/5 은 difficulty_score 1~2, 5/5 는 9~10 정도에 해당한다." : "") + "\n" +
+    pick.map(p => `- AI 점수 ${aiScore(p)}/10 (${manualDiff(p) ? `선생님이 정한 난이도 ${manualDiff(p)}/5` : `상대 난이도 ${diffLevel(p)}/5`}, 배점 ${pointsOf(p) || "?"}점) ${p.examTitle} ${p.number}번: ${p.classification.transcription.replace(/\s+/g, " ").slice(0, 140)}`).join("\n");
 }
 async function classifyBatch(ps) {
   const images = await Promise.all(ps.map(problemBlob));
@@ -1821,7 +1857,7 @@ function askDuplicate(exam, count, sameFile) {
     d.showModal();
   });
 }
-const CARRY = ["classification", "unitId", "unitManual", "solve", "officialAnswer", "generated"];
+const CARRY = ["classification", "unitId", "unitManual", "diffManual", "solve", "officialAnswer", "generated"];
 
 // file: PDF 파일. images 를 주면 PDF 대신 그 이미지들을 한 출처로 넣는다
 // auto: 폴더 감시처럼 묻지 않고 처리 (같은 시험지는 이어받아 교체). 성공하면 true
@@ -2166,6 +2202,7 @@ const COLS = [
   {k: "section", t: "중단원", v: p => UNITS[p.unitId]?.section || ""},
   {k: "type", t: "유형", v: p => p.classification?.question_type || ""},
   {k: "diff", t: "난이도", v: p => diffLevel(p) || "", num: true},
+  {k: "diffBy", t: "난이도 정한 방법", v: p => !p.classification ? "" : manualDiff(p) ? "직접" : diffModel().w ? "배운 기준" : "자동"},
   {k: "score", t: "AI 점수", v: p => aiScore(p) ?? "", num: true},
   {k: "points", t: "배점", v: p => pointsOf(p) || "", num: true},
   {k: "ai", t: "AI 정답", v: ansCell, ans: true},
@@ -2211,6 +2248,9 @@ function renderTable(refreshOptions = false) {
   const head = `<tr>` +
     COLS.map(c => `<th data-k="${c.k}" title="누를 때마다 오름차순 → 내림차순 → 원래 순서" aria-sort="${state.sort.key === c.k ? (state.sort.dir > 0 ? "ascending" : "descending") : "none"}">${esc(c.t)}${arrow(c.k)}</th>`).join("") + `<th class="nosort">상세</th></tr>`;
   const body = rows.map(p => `<tr data-id="${esc(p.id)}">${COLS.map(c => {
+    if (c.k === "diff" && p.classification && canEdit()) { const d = diffInfo(p);
+      return `<td><select class="dsel" aria-label="${p.number}번 난이도" title="직접 정하면 그 값을 기준으로 다른 문항의 난이도도 배웁니다">` +
+        `<option value="" ${d.manual ? "" : "selected"}>자동 ${d.auto}</option>${[1, 2, 3, 4, 5].map(k => `<option value="${k}" ${d.manual && d.level === k ? "selected" : ""}>${k} 직접</option>`).join("")}</select></td>`; }
     if (c.k === "official") return `<td><input type="text" class="off" value="${esc(p.officialAnswer || "")}" aria-label="${p.number}번 실제 정답" ${canEdit() ? "" : "disabled"}></td>`;
     const v = c.v(p);
     if (c.k === "shared" && v) return `<td><span class="chip blue">${esc(v)}</span></td>`;
@@ -2231,8 +2271,17 @@ function renderTable(refreshOptions = false) {
   $("#sheet").querySelectorAll("tbody tr[data-id]").forEach(tr => {
     const id = tr.dataset.id;
     tr.querySelector(".open").onclick = () => openDetail(id, ids);
+    const ds = tr.querySelector(".dsel"); if (ds) ds.onchange = async e => { await setManualDiff(id, e.target.value); renderTable(); };
     tr.querySelector(".off").onchange = async e => { const p = state.problems.get(id); if (p) { await saveProblem({...p, officialAnswer: e.target.value.trim()}); renderTable(); } };
   });
+}
+// 난이도 직접 정하기 (v: 1~5, "" 면 자동으로 되돌림)
+async function setManualDiff(id, v) {
+  const p = state.problems.get(id); if (!p) return;
+  const k = [1, 2, 3, 4, 5].includes(Number(v)) && v !== "" ? Number(v) : null;
+  await saveProblem({...p, diffManual: k});
+  const md = diffModel();
+  toast(k ? `${p.number}번 난이도를 ${k}로 정했습니다${md.w ? ` · 직접 정한 ${md.n}문항으로 기준을 다시 배웠습니다` : md.n < DIFF_LEARN_MIN ? ` · ${DIFF_LEARN_MIN - md.n}문항 더 정하면 기준을 배웁니다` : ""}` : `${p.number}번 난이도를 자동으로 되돌렸습니다`);
 }
 $("#t-sort-reset").onclick = () => { state.sort = {key: "", dir: 1}; renderTable(); };
 function exportRows(rows) {
@@ -2422,8 +2471,9 @@ function analysisTabHTML(p) {
     ${c ? `
       <dl class="kv">
         <dt>유형</dt><dd>${esc(c.question_type)}</dd>
-        <dt>난이도</dt><dd>${(() => { const d = diffInfo(p); return `<span class="dots">${dots(d.level)}</span> ${d.level}/5 ${DIFF_NAMES[d.level]}
-          <div class="muted">${d.relative ? `분류된 ${d.n}문항 중 어려운 쪽 상위 ${d.top}%` : `분류된 문항이 ${d.n}개뿐이라 AI 점수로 매김`} · AI 점수 ${d.raw}/10${d.points ? ` · 배점 ${d.points}점` : ""}</div>`; })()}</dd>
+        <dt>난이도</dt><dd>${(() => { const d = diffInfo(p), md = diffModel(); return `<span class="dots">${dots(d.level)}</span> ${d.level}/5 ${DIFF_NAMES[d.level]}${d.manual ? ` <span class="chip">직접 정함</span>` : ""}
+          <div class="muted">${d.manual ? `직접 정한 난이도입니다 (자동으로 매기면 ${d.auto}/5)` : d.learned ? `직접 정한 ${md.n}문항으로 배운 기준으로 매김` : d.relative ? `분류된 ${d.n}문항 중 어려운 쪽 상위 ${d.top}%` : `분류된 문항이 ${d.n}개뿐이라 AI 점수로 매김`} · AI 점수 ${d.raw}/10${d.points ? ` · 배점 ${d.points}점` : ""}</div>
+          ${canEdit() ? `<div class="diff-set" role="group" aria-label="난이도 직접 정하기"><span class="muted">직접 정하기</span>${[1, 2, 3, 4, 5].map(k => `<button class="btn sm ${d.manual && d.level === k ? "primary" : ""}" data-dset="${k}" aria-pressed="${d.manual && d.level === k}">${k}</button>`).join("")}${d.manual ? `<button class="btn sm ghost" data-dset="">자동으로</button>` : ""}</div>` : ""}`; })()}</dd>
         ${c.secondary_unit_ids?.length ? `<dt>함께 쓰이는 단원</dt><dd>${c.secondary_unit_ids.map(u => `<span class="chip">${esc(UNITS[u]?.section)}</span>`).join(" ")}</dd>` : ""}
         <dt>핵심 개념</dt><dd>${c.key_concepts.map(k => `<span class="chip red">${esc(k)}</span>`).join(" ") || "—"}</dd>
       </dl>
@@ -2505,6 +2555,7 @@ function bindDetail(p) {
     btn.onclick = async () => { await moveProblems([cur().id], get()); renderDetail(); };
   }
   if (q(".unclass")) q(".unclass").onclick = async () => { await moveProblems([cur().id], ""); renderDetail(); };
+  d.querySelectorAll("[data-dset]").forEach(b => b.onclick = async () => { await setManualDiff(cur().id, b.dataset.dset); renderDetail(); });
   if (q(".save-img")) q(".save-img").onclick = async () => saveFile(`${safeFile(p.examTitle)}_${pad2(p.number)}번.png`, await problemBlob(cur()));
   if (q(".del-p")) q(".del-p").onclick = async () => {
     if (!(await askConfirm(`${p.number}번 문항을 삭제할까요?`, "삭제"))) return;
@@ -2991,10 +3042,21 @@ function renderSettings() {
   $("#store-stats").textContent = `출처 ${state.exams.size}개 · 문항 ${ps.length}개 (분류 ${ps.filter(p => p.unitId).length}개, 교차 풀이 ${ps.filter(p => p.solve).length}개) · 만든 문제 ${gen + state.made.size}개 (원본에서 ${gen}개, 문제 만들기 보관함 ${state.made.size}개)`;
   $("#btn-wipe").hidden = !canEdit();
   const n = ps.filter(p => p.classification).length;
+  const md = diffModel(), wf = x => (Math.round(x * 100) / 100).toString();
+  $("#diff-learn").innerHTML = md.n
+    ? `직접 정한 난이도 <b>${md.n}문항</b>${md.w ? ` · 이 문항들로 배운 기준: 난이도 ≈ ${wf(md.w[0])} + ${wf(md.w[1])}×AI 점수 + ${wf(md.w[2])}×배점 + ${wf(md.w[3])}×번호 위치 (각 0~1, 기본 기준은 1 + 2.4×AI + 1×배점 + 0.6×위치). 직접 정하지 않은 문항은 이 식으로 매기고, AI 가 새 문항을 분류할 때도 직접 정한 문항을 기준 문항으로 먼저 보여 줍니다.` : ` · ${DIFF_LEARN_MIN}문항 이상(두 단계 이상)을 직접 정하면 그 값으로 난이도 기준을 배웁니다. 지금도 직접 정한 문항은 AI 가 분류할 때 기준 문항으로 먼저 쓰입니다.`}`
+    : `문항 상세의 분석 탭이나 문항 표의 난이도 칸에서 난이도를 직접 정할 수 있습니다. ${DIFF_LEARN_MIN}문항 이상 정하면 그 값으로 다른 문항의 난이도 기준을 배웁니다.`;
+  $("#btn-diff-clear").hidden = !md.n || !canEdit();
   $("#diff-desc").textContent = n >= 10
     ? `난이도는 분류된 ${n}문항 안에서의 상대 순위입니다 (AI 점수 60% + 배점 25% + 출처 안 번호 위치 15%를 합쳐 하위 20%는 1, 상위 20%는 5). 문항이 늘어나면 자동으로 다시 계산됩니다.`
     : `분류된 문항이 ${n}개라 아직 AI 점수(1~10)를 그대로 1~5로 바꿔 씁니다. 10문항 이상이면 저장된 문항 안에서의 상대 순위로 매깁니다.`;
 }
+$("#btn-diff-clear").onclick = async () => {
+  const ps = [...state.problems.values()].filter(p => manualDiff(p));
+  if (!ps.length || !(await askConfirm(`직접 정한 난이도 ${ps.length}개를 모두 지우고 자동으로 되돌릴까요?`, "지우기"))) return;
+  for (const p of ps) await saveProblem({...p, diffManual: null});
+  renderSettings(); toast("직접 정한 난이도를 모두 지웠습니다");
+};
 $("#btn-wipe").onclick = async () => {
   if (!(await askConfirm("저장된 모든 출처·문항·만든 문제를 삭제할까요? 되돌릴 수 없습니다.", "모두 삭제"))) return;
   const b = $("#btn-wipe"); b.disabled = true;

@@ -312,6 +312,14 @@ const sse = obj => {
   // 직접 옮긴 단원은 다시 분류해도 유지
   await page.evaluate(id => classifyMany([id]), dragId);
   await page.click("nav.tabs button[data-tab=table]");
+  // 문항 표의 난이도 칸에서 직접 정하기
+  const tblRow = page.locator("#sheet tbody tr[data-id]").first(), tblId = await tblRow.getAttribute("data-id");
+  await tblRow.locator("select.dsel").selectOption("5"); await page.waitForTimeout(300);
+  const tblSet = await page.evaluate(id => [state.problems.get(id).diffManual, diffLevel(state.problems.get(id)), document.querySelector(`#sheet tr[data-id="${id}"] select.dsel`).value], tblId);
+  await page.locator(`#sheet tr[data-id="${tblId}"] select.dsel`).selectOption(""); await page.waitForTimeout(300);
+  const tblBack = await page.evaluate(id => state.problems.get(id).diffManual, tblId);
+  console.log("table difficulty:", JSON.stringify(tblSet), "back:", tblBack);
+  if (tblSet.join() !== "5,5,5" || tblBack != null) fails.push("문항 표 난이도 직접 정하기");
   // 문항 표에는 한꺼번에 작업(분류·풀이·옮기기·만들기)과 선택 칸이 없다
   const noBulk = await page.evaluate(() => ["#t-classify", "#t-solve", "#t-move", "#t-gen", "#t-all", "#sheet .sel"].filter(x => document.querySelector(x)));
   console.log("table bulk controls left:", JSON.stringify(noBulk), "|", await page.textContent("#t-sel"));
@@ -341,6 +349,32 @@ const sse = obj => {
   console.log("relative levels:", JSON.stringify(levels), "anchored classify calls:", anchored);
   await page.click("nav.tabs button[data-tab=library]"); await page.locator("#grid .card").last().click(); await page.locator("#detail .seg button[data-t=analysis]").click();
   console.log("analysis:", (await page.locator("#detail .kv dd").nth(1).textContent()).replace(/\s+/g, " ").trim());
+  // 난이도 직접 정하기 (분석 탭) → 자동으로 되돌리기
+  const dId = await page.evaluate(() => detailState.id);
+  const autoLv = await page.evaluate(id => diffInfo(state.problems.get(id)).auto, dId);
+  const setTo = autoLv === 1 ? 2 : 1;
+  await page.click(`#detail [data-dset="${setTo}"]`); await page.waitForTimeout(200);
+  const afterSet = await page.evaluate(id => [diffLevel(state.problems.get(id)), state.problems.get(id).diffManual, /직접 정함/.test(document.querySelector("#detail .kv").textContent)], dId);
+  await page.click('#detail [data-dset=""]'); await page.waitForTimeout(200);
+  const afterAuto = await page.evaluate(id => [diffLevel(state.problems.get(id)), state.problems.get(id).diffManual], dId);
+  console.log("manual difficulty:", autoLv, "->", JSON.stringify(afterSet), "-> auto", JSON.stringify(afterAuto));
+  if (afterSet.join() !== `${setTo},${setTo},true` || afterAuto[0] !== autoLv || afterAuto[1] != null) fails.push("난이도 직접 정하기");
+  // 학습: 선생님이 AI 점수와 반대로 매기면(쉬워 보이는 문항이 어렵다) 직접 정하지 않은 문항도 그 기준을 따른다
+  const learn = await page.evaluate(() => {
+    const keep = [state.problems, state.exams];
+    try {
+      state.exams = new Map([["L", {id: "L", title: "학습", kind: "images", addedAt: ""}]]);
+      const mk = (k, score, manual) => ({id: "L" + k, examId: "L", examTitle: "학습", number: k, order: k, section: 0, unitId: "CM1-1-1",
+        classification: {transcription: "문제 " + k, question_type: "5지선다", difficulty_score: score}, diffManual: manual});
+      const ps = [mk(1, 1, 5), mk(2, 2, 5), mk(3, 9, 1), mk(4, 10, 1), mk(5, 5, 3), mk(6, 6, 3), mk(7, 10, null), mk(8, 1, null), ...[9, 10, 11, 12].map(k => mk(k, k - 6, null))];
+      state.problems = new Map(ps.map(p => [p.id, p])); state.rev++;
+      const md = diffModel(), hiAI = diffInfo(state.problems.get("L7")), loAI = diffInfo(state.problems.get("L8"));
+      const anchors = anchorText(new Set());
+      return {n: md.n, w: md.w && md.w.map(x => Math.round(x * 100) / 100), hiAI: [hiAI.level, hiAI.learned], loAI: [loAI.level, loAI.learned], anchorsManual: /선생님이 정한 난이도 5\/5/.test(anchors) && /가장 중요한 기준/.test(anchors)};
+    } finally { [state.problems, state.exams] = keep; state.rev++; }
+  });
+  console.log("difficulty learning:", JSON.stringify(learn));
+  if (learn.n !== 6 || !learn.w || !(learn.w[1] + learn.w[2] + learn.w[3] < 0) || !(learn.hiAI[0] <= 2 && learn.hiAI[1]) || !(learn.loAI[0] >= 4) || !learn.anchorsManual) fails.push("난이도 학습: " + JSON.stringify(learn));
   await page.screenshot({path: `${OUT}/${MODE}-9-difficulty.png`}); await page.click("#detail .close");
 
   if (MODE === "html") {
