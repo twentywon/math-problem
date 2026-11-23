@@ -478,6 +478,17 @@ const sse = obj => {
   await page.locator("#mk-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
   const afterBoxDel = await page.evaluate(() => state.made.size);
   await page.selectOption("#mb-from", "");
+  // 원본 문항에서 만든 문제도 보관함에서 지워진다 (하나, 그리고 보이는 문제 한꺼번에)
+  await page.selectOption("#mb-from", "derived"); await page.waitForTimeout(200);
+  const derivedBefore = await page.evaluate(() => [...state.problems.values()].reduce((n, p) => n + (p.generated?.length || 0), 0));
+  await page.locator("#mk-results .gen .g-del").first().click(); await page.click("#confirm-yes"); await page.waitForTimeout(400);
+  const derivedOne = await page.evaluate(() => [...state.problems.values()].reduce((n, p) => n + (p.generated?.length || 0), 0));
+  const cardsLeft = await page.locator("#mk-results .gen").count();
+  await page.click("#mb-del-shown"); await page.click("#confirm-yes"); await page.waitForTimeout(600);
+  const derivedAll = await page.evaluate(() => [...state.problems.values()].reduce((n, p) => n + (p.generated?.length || 0), 0));
+  console.log("delete derived:", derivedBefore, "->", derivedOne, "cards", cardsLeft, "-> all", derivedAll);
+  if (derivedOne !== derivedBefore - 1 || cardsLeft !== derivedBefore - 1 || derivedAll !== 0) fails.push("보관함에서 원본 문항의 만든 문제 삭제");
+  await page.selectOption("#mb-from", "");
   console.log("box:", JSON.stringify(box), "only make:", onlyMake, "after delete:", afterBoxDel);
   if (box[1] < 1 || box[0] !== 3 + box[1] || onlyMake !== 3 || afterBoxDel !== 2) fails.push("만든 문제 보관함");
   // 예전 버전이 문제 저장소에 넣은 '만든 문제' 출처는 보관함으로 옮겨진다
